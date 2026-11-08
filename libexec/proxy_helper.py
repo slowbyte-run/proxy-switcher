@@ -10,6 +10,8 @@ from __future__ import annotations
 import argparse
 import os
 import re
+import shlex
+import socket
 import sys
 import tomllib
 from urllib.parse import urlsplit
@@ -19,6 +21,9 @@ from kdl import parse_kdl_environment
 
 DEFAULT_ENDPOINT = "http://127.0.0.1:7890"
 DEFAULT_NO_PROXY = "localhost,127.0.0.1,::1"
+
+# Upper bound for the `status --check` connect probe, in seconds.
+PROBE_TIMEOUT = 0.5
 
 PROXY_URL_KEYS = ("http_proxy", "https_proxy", "HTTP_PROXY", "HTTPS_PROXY")
 
@@ -324,14 +329,39 @@ def carrier_state(name: str, path: str) -> str:
     return reader(path) if reader is not None else "unmanaged"
 
 
-def collect_status() -> dict:
+def probe_endpoint(endpoint: str) -> dict:
+    """Probe the endpoint with a bounded loopback-style TCP connect.
+
+    Only a TCP handshake is attempted: no bytes are written, so no HTTP
+    request is made. Unreachable is a valid result, not an error.
+    """
+    parsed = urlsplit(endpoint)
+    try:
+        port = parsed.port
+    except ValueError as error:
+        raise ConfigError(f"endpoint {endpoint} has an invalid port") from error
+    host = parsed.hostname or ""
+    if port is None:
+        port = 80
+
+    state = "down"
+    try:
+        with socket.create_connection((host, port), timeout=PROBE_TIMEOUT):
+            state = "up"
+    except (OSError, ValueError):
+        state = "down"
+
+    return {"state": state, "host": host, "port": port}
+
+
+def collect_status(check: bool = False) -> dict:
     endpoint, no_proxy = load_config()
     paths = carrier_paths()
     ssh = carrier_state("ssh", paths["ssh"])
     ssh_note = ""
     if ssh == "off":
         ssh_note = "GitHub SSH will connect directly; direct access is unreachable"
-    return {
+    status = {
         "endpoint": endpoint,
         "no_proxy": no_proxy,
         "carriers": [
@@ -379,11 +409,17 @@ def collect_status() -> dict:
             ),
         ],
     }
+    if check:
+        status["check"] = probe_endpoint(endpoint)
+    return status
 
 
 def render_human(status: dict) -> str:
+    endpoint_line = f"endpoint  {status['endpoint']}"
+    if "check" in status:
+        endpoint_line += f"  {status['check']['state']}"
     lines = [
-        f"endpoint  {status['endpoint']}",
+        endpoint_line,
         f"no_proxy  {status['no_proxy']}",
         "",
     ]
@@ -420,6 +456,7 @@ def command_status(arguments: list[str]) -> int:
         prog="proxy status", add_help=False, allow_abbrev=False
     )
     parser.add_argument("--json", action="store_true")
+    parser.add_argument("--check", action="store_true")
     try:
         options, unknown = parser.parse_known_args(arguments)
     except SystemExit:
@@ -429,7 +466,7 @@ def command_status(arguments: list[str]) -> int:
         return 2
 
     try:
-        status = collect_status()
+        status = collect_status(check=options.check)
     except ConfigError as error:
         print(f"proxy: {error}", file=sys.stderr)
         return 1
@@ -443,10 +480,48 @@ def command_status(arguments: list[str]) -> int:
     return 0
 
 
-def main(argv: list[str]) -> int:
-    if not argv or argv[0] != "status":
-        print("proxy: helper expects the status command", file=sys.stderr)
+def command_env(arguments: list[str]) -> int:
+    parser = argparse.ArgumentParser(prog="proxy env", add_help=False, allow_abbrev=False)
+    try:
+        _, unknown = parser.parse_known_args(arguments)
+    except SystemExit:
         return 2
+    if unknown:
+        print(f"proxy env: unknown argument: {unknown[0]}", file=sys.stderr)
+        return 2
+
+    try:
+        endpoint, no_proxy = load_config()
+        # `env` feeds the current interactive shell, and the shell carrier is
+        # the one that owns that state: it overrides the niri environment block.
+        state = carrier_state("shell", carrier_paths()["shell"])
+    except ConfigError as error:
+        print(f"proxy: {error}", file=sys.stderr)
+        return 1
+
+    values = {
+        "http_proxy": endpoint,
+        "https_proxy": endpoint,
+        "HTTP_PROXY": endpoint,
+        "HTTPS_PROXY": endpoint,
+        "no_proxy": no_proxy,
+        "NO_PROXY": no_proxy,
+    }
+    if state == "on":
+        for name in SHELL_PROXY_VARS:
+            print(f"export {name}={shlex.quote(values[name])}")
+    else:
+        for name in SHELL_PROXY_VARS:
+            print(f"unset {name}")
+    return 0
+
+
+def main(argv: list[str]) -> int:
+    if not argv or argv[0] not in ("status", "env"):
+        print("proxy: helper expects the status or env command", file=sys.stderr)
+        return 2
+    if argv[0] == "env":
+        return command_env(argv[1:])
     return command_status(argv[1:])
 
 
