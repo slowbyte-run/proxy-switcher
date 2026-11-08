@@ -11,6 +11,7 @@ import importlib
 MODULES = (
     "niri",
     "npm",
+    "pnpm",
 )
 
 # Carriers that are shown in status but deliberately cannot be switched in v1.
