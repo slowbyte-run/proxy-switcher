@@ -14,9 +14,12 @@ import shlex
 import socket
 import sys
 import tomllib
+from dataclasses import dataclass
 from urllib.parse import urlsplit
 
+from carriers import READ_ONLY
 from carriers import get as get_carrier
+from carriers import names as carrier_names
 from kdl import parse_kdl_environment
 
 DEFAULT_ENDPOINT = "http://127.0.0.1:7890"
@@ -66,13 +69,37 @@ class ConfigError(Exception):
     """Raised when the user configuration cannot be used."""
 
 
-def load_config() -> tuple[str, str]:
+@dataclass(frozen=True)
+class Settings:
+    endpoint: str
+    no_proxy: str
+    exclude: tuple[str, ...] = ()
+
+
+def _known_carriers() -> set[str]:
+    return set(carrier_names()) | set(READ_ONLY)
+
+
+def _exclude_list(path: str, raw) -> tuple[str, ...]:
+    if not isinstance(raw, list) or not all(isinstance(name, str) for name in raw):
+        raise ConfigError(f"exclude in {path} must be an array of carrier names")
+    known = _known_carriers()
+    unknown = [name for name in raw if name not in known]
+    if unknown:
+        raise ConfigError(
+            f"exclude in {path} names unknown carrier: {unknown[0]}"
+        )
+    # Preserve the user's order while dropping duplicates.
+    return tuple(dict.fromkeys(raw))
+
+
+def load_settings() -> Settings:
     path = config_path()
     try:
         with open(path, "rb") as handle:
             data = tomllib.load(handle)
     except FileNotFoundError:
-        return DEFAULT_ENDPOINT, DEFAULT_NO_PROXY
+        return Settings(DEFAULT_ENDPOINT, DEFAULT_NO_PROXY)
     except OSError as error:
         raise ConfigError(f"cannot read {path}: {error.strerror}") from error
     except tomllib.TOMLDecodeError as error:
@@ -91,7 +118,13 @@ def load_config() -> tuple[str, str]:
     if not isinstance(no_proxy, str):
         raise ConfigError(f"no_proxy in {path} must be a string")
 
-    return endpoint, no_proxy
+    excluded = _exclude_list(path, data.get("exclude", []))
+    return Settings(endpoint, no_proxy, excluded)
+
+
+def load_config() -> tuple[str, str]:
+    settings = load_settings()
+    return settings.endpoint, settings.no_proxy
 
 
 def carrier_paths() -> dict[str, str]:
@@ -301,13 +334,23 @@ def read_text(path: str) -> str | None:
         return None
 
 
-def carrier_view(name: str, state: str, path: str, tools: list[str], note: str) -> dict:
+def carrier_view(
+    name: str,
+    state: str,
+    path: str,
+    tools: list[str],
+    note: str,
+    skipped: bool = False,
+) -> dict:
+    if skipped:
+        note = (note + "; " if note else "") + "excluded by configuration; skipped"
     return {
         "name": name,
         "state": state,
         "path": path,
         "tools": tools,
         "note": note,
+        "skipped": skipped,
     }
 
 
@@ -355,7 +398,9 @@ def probe_endpoint(endpoint: str) -> dict:
 
 
 def collect_status(check: bool = False) -> dict:
-    endpoint, no_proxy = load_config()
+    settings = load_settings()
+    endpoint, no_proxy = settings.endpoint, settings.no_proxy
+    excluded = set(settings.exclude)
     paths = carrier_paths()
     ssh = carrier_state("ssh", paths["ssh"])
     ssh_note = ""
@@ -371,6 +416,7 @@ def collect_status(check: bool = False) -> dict:
                 paths["niri"],
                 ["niri-spawned processes", "git", "curl", "GUI apps"],
                 "",
+                skipped="niri" in excluded,
             ),
             carrier_view(
                 "shell",
@@ -378,6 +424,7 @@ def collect_status(check: bool = False) -> dict:
                 paths["shell"],
                 ["interactive shells"],
                 "",
+                skipped="shell" in excluded,
             ),
             carrier_view(
                 "npm",
@@ -385,6 +432,7 @@ def collect_status(check: bool = False) -> dict:
                 paths["npm"],
                 ["npm", "yarn v1"],
                 "npm and yarn v1 share this file",
+                skipped="npm" in excluded,
             ),
             carrier_view(
                 "pnpm",
@@ -392,6 +440,7 @@ def collect_status(check: bool = False) -> dict:
                 paths["pnpm"],
                 ["pnpm"],
                 "",
+                skipped="pnpm" in excluded,
             ),
             carrier_view(
                 "ssh",
@@ -399,6 +448,7 @@ def collect_status(check: bool = False) -> dict:
                 paths["ssh"],
                 ["GitHub SSH (github.com)"],
                 ssh_note,
+                skipped="ssh" in excluded,
             ),
             carrier_view(
                 "docker",
@@ -406,6 +456,7 @@ def collect_status(check: bool = False) -> dict:
                 paths["docker"],
                 ["docker daemon"],
                 "read-only: needs root and a daemon restart",
+                skipped="docker" in excluded,
             ),
         ],
     }

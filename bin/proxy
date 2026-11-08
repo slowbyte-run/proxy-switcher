@@ -10,13 +10,14 @@ usage() {
 Usage: proxy <command> [options] [carrier...]
 
 Commands:
-  on [carrier...]    Turn managed carriers on (default: every managed carrier)
-  off [carrier...]   Turn managed carriers off
+  on [carrier...]     Turn managed carriers on (default: every managed carrier)
+  off [carrier...]    Turn managed carriers off
+  toggle [carrier...] Turn on unless every selected carrier is already on
   status [--check] [--json]
-                     Show the state of every proxy carrier
-  env                Print export/unset statements for eval
+                      Show the state of every proxy carrier
+  env                 Print export/unset statements for eval
 
-Options for on/off:
+Options for on/off/toggle:
   --force            Overwrite a file that changed since the last switch
   --dry-run          Show what would change without writing
   --proxy <url>      Override the configured proxy endpoint
@@ -24,6 +25,10 @@ Options for on/off:
 
 Options:
   -h, --help        Show this help
+
+Configuration:
+  $XDG_CONFIG_HOME/proxy-switcher/config.toml accepts endpoint, no_proxy
+  and exclude (a list of carrier names to leave alone).
 
 Exit status: 0 success, 1 conflict/failure, 2 usage error.
 EOF
@@ -58,7 +63,7 @@ if (( $# > 0 )); then
 fi
 
 case "$subcommand" in
-  on | off)
+  on | off | toggle)
     exec python3 -B "$engine" "$subcommand" "${global_options[@]}" "$@"
     ;;
   status)
