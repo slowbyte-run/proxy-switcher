@@ -14,6 +14,9 @@ import sys
 import tomllib
 from urllib.parse import urlsplit
 
+from carriers import get as get_carrier
+from kdl import parse_kdl_environment
+
 DEFAULT_ENDPOINT = "http://127.0.0.1:7890"
 DEFAULT_NO_PROXY = "localhost,127.0.0.1,::1"
 
@@ -98,126 +101,6 @@ def carrier_paths() -> dict[str, str]:
 
 
 # --- KDL ---------------------------------------------------------------
-
-
-def strip_kdl_comments(text: str) -> str:
-    """Remove // and /* */ comments while leaving string literals intact."""
-    out: list[str] = []
-    i = 0
-    length = len(text)
-    in_string = False
-    in_block = False
-
-    while i < length:
-        char = text[i]
-
-        if in_block:
-            if text.startswith("*/", i):
-                in_block = False
-                out.append("  ")
-                i += 2
-            else:
-                out.append("\n" if char == "\n" else " ")
-                i += 1
-            continue
-
-        if in_string:
-            out.append(char)
-            if char == "\\" and i + 1 < length:
-                out.append(text[i + 1])
-                i += 2
-                continue
-            if char == '"':
-                in_string = False
-            i += 1
-            continue
-
-        if text.startswith("//", i):
-            while i < length and text[i] != "\n":
-                i += 1
-            continue
-        if text.startswith("/*", i):
-            in_block = True
-            out.append("  ")
-            i += 2
-            continue
-        if char == '"':
-            in_string = True
-        out.append(char)
-        i += 1
-
-    return "".join(out)
-
-
-def find_matching_brace(text: str, opening: int) -> int | None:
-    depth = 0
-    in_string = False
-    i = opening
-    while i < len(text):
-        char = text[i]
-        if in_string:
-            if char == "\\":
-                i += 2
-                continue
-            if char == '"':
-                in_string = False
-        elif char == '"':
-            in_string = True
-        elif char == "{":
-            depth += 1
-        elif char == "}":
-            depth -= 1
-            if depth == 0:
-                return i
-        i += 1
-    return None
-
-
-def kdl_string_value(raw: str) -> str | None:
-    raw = raw.strip()
-    if raw == "null" or raw.startswith("null ") or raw.startswith("null;"):
-        return None
-    if not raw.startswith('"'):
-        return None
-    value: list[str] = []
-    i = 1
-    while i < len(raw):
-        char = raw[i]
-        if char == "\\" and i + 1 < len(raw):
-            escape = raw[i + 1]
-            mapping = {"n": "\n", "t": "\t", "r": "\r", '"': '"', "\\": "\\"}
-            value.append(mapping.get(escape, escape))
-            i += 2
-            continue
-        if char == '"':
-            return "".join(value)
-        value.append(char)
-        i += 1
-    return None
-
-
-def parse_kdl_environment(text: str) -> dict[str, str | None]:
-    """Return the effective environment variables from niri config.kdl."""
-    stripped = strip_kdl_comments(text)
-    variables: dict[str, str | None] = {}
-
-    block_re = re.compile(r"(?:^|\n)[ \t]*environment[ \t]*\{")
-    for match in block_re.finditer(stripped):
-        opening = stripped.index("{", match.start())
-        closing = find_matching_brace(stripped, opening)
-        if closing is None:
-            continue
-        body = stripped[opening + 1 : closing]
-        for statement in re.split(r"[\n;]", body):
-            statement = statement.strip()
-            if not statement or statement.startswith("/-"):
-                continue
-            node = re.match(r"([A-Za-z_][A-Za-z0-9_-]*)[ \t]+(.*)$", statement)
-            if not node:
-                continue
-            name, rest = node.group(1), node.group(2)
-            variables[name] = kdl_string_value(rest)
-    return variables
 
 
 def niri_state(path: str) -> str:
@@ -423,10 +306,28 @@ def carrier_view(name: str, state: str, path: str, tools: list[str], note: str) 
     }
 
 
+STATE_READERS = {
+    "niri": niri_state,
+    "shell": shell_state,
+    "npm": npm_state,
+    "pnpm": pnpm_state,
+    "ssh": ssh_state,
+}
+
+
+def carrier_state(name: str, path: str) -> str:
+    """Prefer a registered carrier's own reader; fall back for the rest."""
+    carrier = get_carrier(name)
+    if carrier is not None:
+        return carrier.read_state(path)
+    reader = STATE_READERS.get(name)
+    return reader(path) if reader is not None else "unmanaged"
+
+
 def collect_status() -> dict:
     endpoint, no_proxy = load_config()
     paths = carrier_paths()
-    ssh = ssh_state(paths["ssh"])
+    ssh = carrier_state("ssh", paths["ssh"])
     ssh_note = ""
     if ssh == "off":
         ssh_note = "GitHub SSH will connect directly; direct access is unreachable"
@@ -436,28 +337,28 @@ def collect_status() -> dict:
         "carriers": [
             carrier_view(
                 "niri",
-                niri_state(paths["niri"]),
+                carrier_state("niri", paths["niri"]),
                 paths["niri"],
                 ["niri-spawned processes", "git", "curl", "GUI apps"],
                 "",
             ),
             carrier_view(
                 "shell",
-                shell_state(paths["shell"]),
+                carrier_state("shell", paths["shell"]),
                 paths["shell"],
                 ["interactive shells"],
                 "",
             ),
             carrier_view(
                 "npm",
-                npm_state(paths["npm"]),
+                carrier_state("npm", paths["npm"]),
                 paths["npm"],
                 ["npm", "yarn v1"],
                 "npm and yarn v1 share this file",
             ),
             carrier_view(
                 "pnpm",
-                pnpm_state(paths["pnpm"]),
+                carrier_state("pnpm", paths["pnpm"]),
                 paths["pnpm"],
                 ["pnpm"],
                 "",

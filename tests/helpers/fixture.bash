@@ -42,6 +42,25 @@ npmrc_path() { printf '%s\n' "$HOME/.npmrc"; }
 pnpm_config_path() { printf '%s\n' "$XDG_CONFIG_HOME/pnpm/config.yaml"; }
 ssh_config_path() { printf '%s\n' "$HOME/.ssh/config"; }
 
+write_niri_plain() {
+  cat > "$(niri_config_path)" <<'KDL'
+// niri configuration
+environment {
+    LANG "zh_CN.UTF-8"
+    QT_QPA_PLATFORM "wayland"
+
+    // keep this comment
+    GODEBUG "http2client=0"
+}
+
+input {
+    keyboard {
+        repeat-delay 400
+    }
+}
+KDL
+}
+
 write_niri_on() {
   cat > "$(niri_config_path)" <<'KDL'
 // niri configuration
@@ -261,6 +280,18 @@ write_all_carriers_off() {
   write_npm_off
   write_pnpm_off
   write_ssh_off
+}
+
+proxy_state_root() { printf '%s\n' "$XDG_STATE_HOME/proxy-switcher"; }
+proxy_manifest_path() { printf '%s\n' "$(proxy_state_root)/manifest.json"; }
+proxy_snapshot_count() {
+  local dir
+  dir="$(proxy_state_root)/snapshots"
+  if [[ ! -d "$dir" ]]; then
+    printf '0\n'
+    return
+  fi
+  find "$dir" -mindepth 1 -maxdepth 1 -type d | wc -l
 }
 
 write_proxy_config() {
