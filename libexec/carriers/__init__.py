@@ -10,6 +10,7 @@ import importlib
 
 MODULES = (
     "niri",
+    "shell",
 )
 
 # Carriers that are shown in status but deliberately cannot be switched in v1.
