@@ -10,11 +10,6 @@ setup() {
   fixture_init
 }
 
-proxy_keys() {
-  printf '%s\n' \
-    http_proxy https_proxy HTTP_PROXY HTTPS_PROXY no_proxy NO_PROXY
-}
-
 @test "on writes the six proxy keys and preserves other environment entries" {
   write_niri_plain
   local before_input after_input
@@ -291,17 +286,55 @@ TOML
   grep -qF 'http_proxy "http://127.0.0.1:7999"' "$(niri_config_path)"
 }
 
-@test "off creates an environment block when the config is missing" {
+@test "off does not create a config file when none existed" {
   rm -f "$(niri_config_path)"
 
   run_proxy off niri
 
   [ "$status" -eq 0 ]
-  [ -f "$(niri_config_path)" ]
-  for key in $(proxy_keys); do
-    grep -qE "^[[:space:]]+${key} null$" "$(niri_config_path)"
-  done
+  [ ! -e "$(niri_config_path)" ]
   [ "$(jq -r '.carriers.niri.original_existed' "$(proxy_manifest_path)")" = "false" ]
+}
+
+@test "off removes an environment block that on created in an existing file" {
+  write_niri_without_environment_block
+  cp -p "$(niri_config_path)" "$FIXTURE_ROOT/original"
+
+  run_proxy on niri
+  [ "$status" -eq 0 ]
+  grep -qE '^environment \{' "$(niri_config_path)"
+
+  run_proxy off niri
+  [ "$status" -eq 0 ]
+
+  cmp "$(niri_config_path)" "$FIXTURE_ROOT/original"
+  ! grep -qE '^environment \{' "$(niri_config_path)"
+  ! grep -qE '^[[:space:]]+(http_proxy|https_proxy|HTTP_PROXY|HTTPS_PROXY|no_proxy|NO_PROXY) ' \
+    "$(niri_config_path)"
+  [ "$(jq -r '.carriers.niri.original_existed' "$(proxy_manifest_path)")" = "false" ]
+}
+
+@test "off removes a config file that on created" {
+  rm -f "$(niri_config_path)"
+
+  run_proxy on niri
+  [ "$status" -eq 0 ]
+  [ -f "$(niri_config_path)" ]
+
+  run_proxy off niri
+  [ "$status" -eq 0 ]
+  [ ! -e "$(niri_config_path)" ]
+}
+
+@test "off on an existing file without an environment block changes nothing" {
+  write_niri_without_environment_block
+  local before
+  before="$(sha256sum "$(niri_config_path)" | cut -d' ' -f1)"
+
+  run_proxy off niri
+
+  [ "$status" -eq 0 ]
+  [ "$(sha256sum "$(niri_config_path)" | cut -d' ' -f1)" = "$before" ]
 }
 
 @test "unknown carriers and unmanaged carriers are usage errors" {

@@ -37,10 +37,35 @@ run_proxy() {
 }
 
 niri_config_path() { printf '%s\n' "$XDG_CONFIG_HOME/niri/config.kdl"; }
-shell_rc_path() { printf '%s\n' "$HOME/.zshrc"; }
+shell_rc_path() {
+  case "$(basename "${SHELL:-}")" in
+    bash) printf '%s\n' "$HOME/.bashrc" ;;
+    *) printf '%s\n' "$HOME/.zshrc" ;;
+  esac
+}
 npmrc_path() { printf '%s\n' "$HOME/.npmrc"; }
 pnpm_config_path() { printf '%s\n' "$XDG_CONFIG_HOME/pnpm/config.yaml"; }
 ssh_config_path() { printf '%s\n' "$HOME/.ssh/config"; }
+
+proxy_keys() {
+  printf '%s\n' \
+    http_proxy https_proxy HTTP_PROXY HTTPS_PROXY no_proxy NO_PROXY
+}
+
+managed_carriers() {
+  printf '%s\n' niri shell npm pnpm ssh
+}
+
+carrier_path() {
+  case "$1" in
+    niri) niri_config_path ;;
+    shell) shell_rc_path ;;
+    npm) npmrc_path ;;
+    pnpm) pnpm_config_path ;;
+    ssh) ssh_config_path ;;
+    *) return 1 ;;
+  esac
+}
 
 write_niri_plain() {
   cat > "$(niri_config_path)" <<'KDL'
@@ -263,6 +288,18 @@ Host github.com
     HostName ssh.github.com
     User git
     Port 443
+SSH
+}
+
+# No github.com block at all: ``on`` has to append one.
+write_ssh_without_github() {
+  cat > "$(ssh_config_path)" <<'SSH'
+Host example.com
+    HostName example.com
+    User git
+
+Host internal.example
+    HostName 10.0.0.1
 SSH
 }
 

@@ -133,7 +133,8 @@ def parse_kdl_environment(text: str) -> dict[str, str | None]:
     return variables
 
 
-def _environment_block(stripped: str) -> tuple[int, int] | None:
+def _environment_block(stripped: str) -> tuple[int, int, int] | None:
+    """Return ``(line_start, opening_brace, closing_brace)``."""
     match = re.search(r"(?:^|\n)[ \t]*environment[ \t]*\{", stripped)
     if not match:
         return None
@@ -141,7 +142,32 @@ def _environment_block(stripped: str) -> tuple[int, int] | None:
     closing = find_matching_brace(stripped, opening)
     if closing is None:
         return None
-    return opening, closing
+    line_start = match.start()
+    if stripped[line_start] == "\n":
+        line_start += 1
+    return line_start, opening, closing
+
+
+def environment_block_exists(text: str) -> bool:
+    return _environment_block(strip_kdl_comments(text)) is not None
+
+
+def remove_environment_block(text: str) -> str:
+    """Remove the first ``environment {}`` block and its line.
+
+    Used when ``on`` created the block and ``off`` must return the file to a
+    state without it. Everything outside the block is preserved.
+    """
+    found = _environment_block(strip_kdl_comments(text))
+    if found is None:
+        return text
+    line_start, _, closing = found
+    end = closing + 1
+    if text[end : end + 2] == "\r\n":
+        end += 2
+    elif text[end : end + 1] == "\n":
+        end += 1
+    return text[:line_start] + text[end:]
 
 
 def _statements(stripped: str, start: int, end: int) -> list[tuple[int, int]]:
@@ -223,7 +249,7 @@ def update_environment(text: str, values: dict[str, str | None]) -> str:
             addition = addition + "\n"
         return text + addition
 
-    opening, closing = block
+    opening, closing = block[1], block[2]
     body_start = opening + 1
     body_end = closing
     edits: list[tuple[int, int, str]] = []

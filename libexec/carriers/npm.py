@@ -1,14 +1,17 @@
 """npm carrier: the proxy keys in ``~/.npmrc``.
 
 npm and yarn v1 both read this file, so the status row names both tools and the
-carrier writes ``proxy``, ``https-proxy`` and ``noproxy``. ``off`` restores the
-pre-switch snapshot byte for byte; that is why ``render_off`` never runs.
+carrier writes ``proxy``, ``https-proxy`` and ``noproxy``. ``off`` removes
+those three keys: absence is npm's canonical "no proxy" state. The original
+bytes are kept in the snapshot for the explicit ``restore`` command.
 """
 
 from __future__ import annotations
 
 import os
 import re
+
+from proxy_common import line_ending, unquote
 
 from .model import Carrier
 
@@ -20,13 +23,6 @@ _ASSIGNMENT = re.compile(r"^\s*([^=\s][^=]*?)\s*=")
 
 def resolve(context) -> str:
     return os.path.join(context.home, ".npmrc")
-
-
-def _unquote(value: str) -> str:
-    value = value.strip()
-    if len(value) >= 2 and value[0] == value[-1] and value[0] in "\"'":
-        return value[1:-1]
-    return value
 
 
 def read_state(path: str) -> str:
@@ -46,8 +42,16 @@ def read_state(path: str) -> str:
         key, value = stripped.split("=", 1)
         key = key.strip().lower()
         if key in ("proxy", "https-proxy"):
-            values[key] = _unquote(value)
+            values[key] = unquote(value)
     return "on" if any(values.get(key) for key in values) else "off"
+
+
+def region_exists(text: str) -> bool:
+    for line in text.splitlines():
+        key = _key_of(line.rstrip("\r\n"))
+        if key in KEYS:
+            return True
+    return False
 
 
 def _values(context) -> dict[str, str]:
@@ -56,10 +60,6 @@ def _values(context) -> dict[str, str]:
         "https-proxy": context.endpoint,
         "noproxy": context.no_proxy,
     }
-
-
-def _line_ending(text: str) -> str:
-    return "\r\n" if "\r\n" in text else "\n"
 
 
 def _key_of(body: str) -> str | None:
@@ -76,21 +76,21 @@ def _indent_of(body: str) -> str:
 
 def _update(text: str, values: dict[str, str]) -> str:
     """Replace the managed keys in place, drop duplicates, then append any missing."""
-    ending = _line_ending(text)
+    ending = line_ending(text)
     lines = text.splitlines(keepends=True)
     seen: set[str] = set()
     updated: list[str] = []
 
     for line in lines:
         body = line.rstrip("\r\n")
-        line_ending = line[len(body) :]
+        line_ending_ = line[len(body) :]
         key = _key_of(body)
         if key in values:
             if key in seen:
                 continue
             seen.add(key)
             updated.append(
-                f"{_indent_of(body)}{key}={values[key]}{line_ending or ending}"
+                f"{_indent_of(body)}{key}={values[key]}{line_ending_ or ending}"
             )
         else:
             updated.append(line)
@@ -105,6 +105,17 @@ def _update(text: str, values: dict[str, str]) -> str:
     return "".join(updated)
 
 
+def _remove(text: str, keys: tuple[str, ...]) -> str:
+    """Remove every line that assigns one of ``keys``."""
+    kept: list[str] = []
+    for line in text.splitlines(keepends=True):
+        key = _key_of(line.rstrip("\r\n"))
+        if key in keys:
+            continue
+        kept.append(line)
+    return "".join(kept)
+
+
 def render_on(text: str, context) -> str:
     path = resolve(context)
     if not os.path.exists(path):
@@ -115,9 +126,8 @@ def render_on(text: str, context) -> str:
     return _update(text, _values(context))
 
 
-def render_off(text: str, context) -> str:
-    # off_strategy is "restore", so the engine rewrites the snapshot instead.
-    return text
+def render_off(text: str, context, remove_region: bool = False) -> str:
+    return _remove(text, KEYS)
 
 
 CARRIER = Carrier(
@@ -129,6 +139,6 @@ CARRIER = Carrier(
     read_state=read_state,
     render_on=render_on,
     render_off=render_off,
-    off_strategy="restore",
+    region_exists=region_exists,
     default_mode=0o600,
 )

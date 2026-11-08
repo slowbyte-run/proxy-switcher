@@ -12,6 +12,8 @@ import re
 from dataclasses import dataclass
 from urllib.parse import urlsplit
 
+from proxy_common import line_ending
+
 from .model import Carrier
 
 NAME = "ssh"
@@ -61,10 +63,7 @@ def _join(lines: list[_Line]) -> str:
 
 
 def _newline(lines: list[_Line]) -> str:
-    for line in lines:
-        if line.ending == "\r\n":
-            return "\r\n"
-    return "\n"
+    return line_ending("".join(line.ending for line in lines))
 
 
 def _directive(line: _Line):
@@ -134,6 +133,10 @@ def read_state(path: str) -> str:
     return "on"
 
 
+def region_exists(text: str) -> bool:
+    return _github_block(_split_lines(text)) is not None
+
+
 def _proxy_command(context) -> str:
     endpoint = urlsplit(context.endpoint)
     return f"ncat --proxy {endpoint.netloc} --proxy-type http %h %p"
@@ -188,7 +191,7 @@ def _insert_proxy(lines: list[_Line], block: _Block, value: str) -> str:
 
 
 def _append_block(text: str, value: str) -> str:
-    newline = "\r\n" if "\r\n" in text else "\n"
+    newline = line_ending(text)
     block = f"Host {HOST}{newline}    ProxyCommand {value}{newline}"
     if not text:
         return block
@@ -199,11 +202,26 @@ def _append_block(text: str, value: str) -> str:
     return text + newline + newline + block
 
 
+def _remove_block(text: str) -> str:
+    """Remove the github.com block that ``on`` appended."""
+    lines = _split_lines(text)
+    block = _github_block(lines)
+    if block is None:
+        return text
+    start = block.host_index
+    # ``_append_block`` may have inserted one blank separator line.
+    if start > 0 and lines[start - 1].text == "":
+        start -= 1
+    return _join(lines[:start] + lines[block.end :])
+
+
 def render_on(text: str, context) -> str:
     return _render(text, _proxy_command(context))
 
 
-def render_off(text: str, context) -> str:
+def render_off(text: str, context, remove_region: bool = False) -> str:
+    if remove_region:
+        return _remove_block(text)
     return _render(text, PROXY_VALUE_NONE)
 
 
@@ -212,10 +230,11 @@ CARRIER = Carrier(
     managed=True,
     tools=("GitHub SSH (github.com)",),
     note="",
+    note_off="GitHub SSH will connect directly; direct access is unreachable",
     resolve=resolve,
     read_state=read_state,
     render_on=render_on,
     render_off=render_off,
-    off_strategy="render",
+    region_exists=region_exists,
     default_mode=0o600,
 )

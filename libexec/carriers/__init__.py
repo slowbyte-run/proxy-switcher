@@ -14,12 +14,8 @@ MODULES = (
     "npm",
     "pnpm",
     "ssh",
+    "docker",
 )
-
-# Carriers that are shown in status but deliberately cannot be switched in v1.
-READ_ONLY = {
-    "docker": "read-only: needs root and a daemon restart",
-}
 
 
 def _load():
@@ -36,6 +32,10 @@ CARRIERS = _load()
 
 def get(name: str):
     return CARRIERS.get(name)
+
+
+def all_carriers():
+    return list(CARRIERS.values())
 
 
 def names() -> list[str]:

@@ -235,6 +235,25 @@ TOML
   [[ "$output" == *"http://127.0.0.1:7890"* ]]
 }
 
+@test "--proxy overrides the endpoint for status and status --json" {
+  run_proxy --proxy http://127.0.0.1:7999 status
+
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"http://127.0.0.1:7999"* ]]
+
+  run_proxy status --json --proxy http://127.0.0.1:7998
+
+  [ "$status" -eq 0 ]
+  [ "$(printf '%s\n' "$output" | jq -r .endpoint)" = "http://127.0.0.1:7998" ]
+}
+
+@test "--proxy rejects a non-http URL for read-only commands too" {
+  run_proxy --proxy socks5://127.0.0.1:7890 status
+
+  [ "$status" -eq 2 ]
+  [[ "$output" == *"http URL"* ]]
+}
+
 @test "status rejects a non-http endpoint with exit code 1" {
   write_proxy_config <<'TOML'
 endpoint = "https://127.0.0.1:7890"

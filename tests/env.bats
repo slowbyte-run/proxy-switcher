@@ -10,11 +10,6 @@ setup() {
   fixture_init
 }
 
-proxy_keys() {
-  printf '%s\n' \
-    http_proxy https_proxy HTTP_PROXY HTTPS_PROXY no_proxy NO_PROXY
-}
-
 @test "env prints six exports when the shell carrier is on" {
   write_shell_on
 
@@ -98,6 +93,32 @@ TOML
   eval "$output"
   [ "$http_proxy" = "http://127.0.0.1:7890/odd path?q='x y'" ]
   [ "$no_proxy" = "localhost,example.test,with space" ]
+}
+
+@test "--proxy overrides the endpoint printed by env" {
+  write_shell_on
+
+  run_proxy env --proxy http://127.0.0.1:7999
+
+  [ "$status" -eq 0 ]
+  eval "$output"
+  [ "$http_proxy" = "http://127.0.0.1:7999" ]
+  [ "$HTTPS_PROXY" = "http://127.0.0.1:7999" ]
+}
+
+@test "env follows the rc file selected by SHELL" {
+  SHELL=/bin/bash
+  export SHELL
+  cat > "$HOME/.bashrc" <<'SH'
+export http_proxy="http://127.0.0.1:7899"
+export https_proxy="http://127.0.0.1:7899"
+SH
+
+  run_proxy env
+
+  [ "$status" -eq 0 ]
+  eval "$output"
+  [ "$http_proxy" = "http://127.0.0.1:7890" ]
 }
 
 @test "env performs no writes and never invokes niri" {

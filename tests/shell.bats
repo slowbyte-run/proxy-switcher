@@ -10,11 +10,6 @@ setup() {
   fixture_init
 }
 
-proxy_keys() {
-  printf '%s\n' \
-    http_proxy https_proxy HTTP_PROXY HTTPS_PROXY no_proxy NO_PROXY
-}
-
 write_shell_with_snippet_in_the_middle() {
   cat > "$(shell_rc_path)" <<'SH'
 export BEFORE_MARKER=1
@@ -274,4 +269,46 @@ TOML
 
   [ "$status" -eq 0 ]
   [ "$(sha256sum "$(shell_rc_path)" | cut -d' ' -f1)" = "$before" ]
+}
+
+@test "the shell carrier uses ~/.bashrc when SHELL is bash" {
+  SHELL=/bin/bash
+  export SHELL
+  rm -f "$HOME/.bashrc" "$HOME/.zshrc"
+
+  run_proxy on shell
+
+  [ "$status" -eq 0 ]
+  [ -f "$HOME/.bashrc" ]
+  [ ! -e "$HOME/.zshrc" ]
+  for key in $(proxy_keys); do
+    grep -qE "^export ${key}=\"" "$HOME/.bashrc"
+  done
+
+  run_proxy status
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"$HOME/.bashrc"* ]]
+}
+
+@test "the shell carrier falls back to ~/.zshrc for other shells" {
+  SHELL=/bin/fish
+  export SHELL
+  rm -f "$HOME/.bashrc" "$HOME/.zshrc"
+
+  run_proxy on shell
+
+  [ "$status" -eq 0 ]
+  [ -f "$HOME/.zshrc" ]
+  [ ! -e "$HOME/.bashrc" ]
+}
+
+@test "the shell carrier falls back to ~/.zshrc when SHELL is unset" {
+  unset SHELL
+  rm -f "$HOME/.bashrc" "$HOME/.zshrc"
+
+  run_proxy on shell
+
+  [ "$status" -eq 0 ]
+  [ -f "$HOME/.zshrc" ]
+  [ ! -e "$HOME/.bashrc" ]
 }

@@ -5,6 +5,10 @@ it can be preserved byte for byte. ``on`` writes six ``export`` lines; ``off``
 writes six explicit ``unset`` lines instead of deleting the snippet, because an
 interactive shell overrides niri's ``environment {}`` block and a missing
 variable would let that block's value leak through.
+
+The rc file follows ``$SHELL``: zsh uses ``~/.zshrc``, bash uses
+``~/.bashrc``, and anything else (or an unset ``SHELL``) falls back to
+``~/.zshrc``.
 """
 
 from __future__ import annotations
@@ -12,18 +16,17 @@ from __future__ import annotations
 import os
 import re
 
+from proxy_common import (
+    PROXY_URL_VARS,
+    PROXY_VARS,
+    proxy_values,
+    quote_shell_double,
+    unquote,
+)
+
 from .model import Carrier
 
 NAME = "shell"
-PROXY_KEYS = (
-    "http_proxy",
-    "https_proxy",
-    "HTTP_PROXY",
-    "HTTPS_PROXY",
-    "no_proxy",
-    "NO_PROXY",
-)
-PROXY_URL_KEYS = ("http_proxy", "https_proxy", "HTTP_PROXY", "HTTPS_PROXY")
 
 SNIPPET_START = "# >>> proxy-switcher >>>"
 SNIPPET_END = "# <<< proxy-switcher <<<"
@@ -37,7 +40,9 @@ _UNSET = re.compile(r"unset\s+(.+)$")
 
 
 def rc_path(context) -> str:
-    return os.path.join(context.home, ".zshrc")
+    shell = os.path.basename(os.environ.get("SHELL", "")).lower()
+    filename = ".bashrc" if shell == "bash" else ".zshrc"
+    return os.path.join(context.home, filename)
 
 
 def resolve(context) -> str:
@@ -59,13 +64,6 @@ def _extract_snippet(text: str) -> str | None:
     return None
 
 
-def _unquote(value: str) -> str:
-    value = value.strip()
-    if len(value) >= 2 and value[0] == value[-1] and value[0] in "\"'":
-        return value[1:-1]
-    return value
-
-
 def read_state(path: str) -> str:
     try:
         with open(path, encoding="utf-8", errors="replace") as handle:
@@ -84,42 +82,29 @@ def read_state(path: str) -> str:
         assignment = _ASSIGNMENT.match(stripped)
         if assignment:
             name = assignment.group(1)
-            if name in PROXY_KEYS:
-                values[name] = _unquote(assignment.group(2))
+            if name in PROXY_VARS:
+                values[name] = unquote(assignment.group(2))
             continue
         unset = _UNSET.match(stripped)
         if unset:
             for name in re.findall(r"[A-Za-z_][A-Za-z0-9_]*", unset.group(1)):
-                if name in PROXY_KEYS:
+                if name in PROXY_VARS:
                     values[name] = ""
 
-    return "on" if any(values.get(key) for key in PROXY_URL_KEYS) else "off"
+    return "on" if any(values.get(key) for key in PROXY_URL_VARS) else "off"
 
 
 def _quote(value: str) -> str:
-    escaped = (
-        value.replace("\\", "\\\\")
-        .replace('"', '\\"')
-        .replace("$", "\\$")
-        .replace("`", "\\`")
-    )
-    return f'"{escaped}"'
+    return quote_shell_double(value)
 
 
 def _snippet(context, *, on: bool) -> str:
     lines = [SNIPPET_START]
     if on:
-        values = {
-            "http_proxy": context.endpoint,
-            "https_proxy": context.endpoint,
-            "HTTP_PROXY": context.endpoint,
-            "HTTPS_PROXY": context.endpoint,
-            "no_proxy": context.no_proxy,
-            "NO_PROXY": context.no_proxy,
-        }
-        lines.extend(f"export {key}={_quote(values[key])}" for key in PROXY_KEYS)
+        values = proxy_values(context.endpoint, context.no_proxy)
+        lines.extend(f"export {key}={_quote(values[key])}" for key in PROXY_VARS)
     else:
-        lines.extend(f"unset {key}" for key in PROXY_KEYS)
+        lines.extend(f"unset {key}" for key in PROXY_VARS)
     lines.append(SNIPPET_END)
     return "\n".join(lines) + "\n"
 
@@ -152,11 +137,39 @@ def _replace(text: str, block: str) -> str:
     return prefix + block
 
 
+def _remove_snippet(text: str) -> str:
+    """Remove the managed snippet, including the blank line ``_replace`` adds."""
+    lines = text.splitlines(keepends=True)
+    start = None
+    for index, line in enumerate(lines):
+        if line.strip() == SNIPPET_START:
+            start = index
+            break
+    if start is None:
+        return text
+
+    end = len(lines)
+    for index in range(start + 1, len(lines)):
+        if lines[index].strip() == SNIPPET_END:
+            end = index + 1
+            break
+
+    prefix = "".join(lines[:start])
+    suffix = "".join(lines[end:])
+    # ``_replace`` inserts one blank line before an appended snippet when the
+    # file ends with a single newline. Drop that separator again.
+    if prefix.endswith("\n\n"):
+        prefix = prefix[:-1]
+    return prefix + suffix
+
+
 def render_on(text: str, context) -> str:
     return _replace(text, _snippet(context, on=True))
 
 
-def render_off(text: str, context) -> str:
+def render_off(text: str, context, remove_region: bool = False) -> str:
+    if remove_region:
+        return _remove_snippet(text)
     return _replace(text, _snippet(context, on=False))
 
 
@@ -177,6 +190,6 @@ CARRIER = Carrier(
     render_on=render_on,
     render_off=render_off,
     after_write=after_write,
-    off_strategy="render",
+    delete_created_file=False,
     default_mode=0o644,
 )

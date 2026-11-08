@@ -102,11 +102,10 @@ TOML
   [ "$(proxy_snapshot_count)" -eq "$first_snapshots" ]
 }
 
-@test "off restores the original file byte for byte, including old proxy values" {
+@test "off removes the three proxy keys but keeps other keys, comments and mode" {
   write_pnpm_hand_edited
   chmod 600 "$(pnpm_config_path)"
-  local before
-  before="$(sha256sum "$(pnpm_config_path)" | cut -d' ' -f1)"
+  cp "$(pnpm_config_path)" "$FIXTURE_ROOT/original"
 
   run_proxy on pnpm
   [ "$status" -eq 0 ]
@@ -115,10 +114,31 @@ TOML
   run_proxy off pnpm
 
   [ "$status" -eq 0 ]
-  [ "$(sha256sum "$(pnpm_config_path)" | cut -d' ' -f1)" = "$before" ]
+  ! grep -qE '^(httpProxy|httpsProxy|noProxy):' "$(pnpm_config_path)"
+  grep -qF 'strictPeerDependencies: false' "$(pnpm_config_path)"
+  grep -qF '# pnpm settings' "$(pnpm_config_path)"
+  grep -qF 'peerDependencies:' "$(pnpm_config_path)"
+  [ "$(stat -c '%a' "$(pnpm_config_path)")" = "600" ]
+  grep -qF "httpProxy: 'http://127.0.0.1:9999' # previous endpoint" \
+    "$FIXTURE_ROOT/original"
+}
+
+@test "restore brings back hand-edited proxy values that off removed" {
+  write_pnpm_hand_edited
+  cp "$(pnpm_config_path)" "$FIXTURE_ROOT/original"
+
+  run_proxy on pnpm
+  [ "$status" -eq 0 ]
+  run_proxy off pnpm
+  [ "$status" -eq 0 ]
+  ! grep -qF 'httpProxy' "$(pnpm_config_path)"
+
+  run_proxy restore pnpm
+
+  [ "$status" -eq 0 ]
+  cmp "$(pnpm_config_path)" "$FIXTURE_ROOT/original"
   grep -qF "httpProxy: 'http://127.0.0.1:9999' # previous endpoint" \
     "$(pnpm_config_path)"
-  [ "$(stat -c '%a' "$(pnpm_config_path)")" = "600" ]
 }
 
 @test "off removes the config file when it did not exist before on" {
