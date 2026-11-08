@@ -12,7 +12,9 @@ Usage: proxy <command> [options] [carrier...]
 Commands:
   on [carrier...]    Turn managed carriers on (default: every managed carrier)
   off [carrier...]   Turn managed carriers off
-  status [--json]    Show the state of every proxy carrier
+  status [--check] [--json]
+                     Show the state of every proxy carrier
+  env                Print export/unset statements for eval
 
 Options for on/off:
   --force            Overwrite a file that changed since the last switch
@@ -65,6 +67,13 @@ case "$subcommand" in
       exit 2
     fi
     exec python3 -B "$helper" status "$@"
+    ;;
+  env)
+    if (( ${#global_options[@]} > 0 )); then
+      printf 'proxy: options before the command are not valid for env\n' >&2
+      exit 2
+    fi
+    exec python3 -B "$helper" env "$@"
     ;;
   -h | --help | help)
     usage
