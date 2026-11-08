@@ -1,37 +1,35 @@
 #!/usr/bin/env python3
 """Read-only helpers for the proxy-switcher CLI.
 
-The bash entry point owns command dispatch; this helper reads carrier files
-and renders the status view. Nothing in this file writes to disk.
+The CLI entry point owns command dispatch; this helper reads carrier files and
+renders the status / env views. Nothing in this file writes to disk.
 """
 
 from __future__ import annotations
 
-import argparse
+import ipaddress
+import json
 import os
-import re
 import shlex
 import socket
-import sys
+import threading
+import time
 import tomllib
 from dataclasses import dataclass
 from urllib.parse import urlsplit
 
-from carriers import READ_ONLY
+import carriers
 from carriers import get as get_carrier
 from carriers import names as carrier_names
-from kdl import parse_kdl_environment
+from proxy_common import PROXY_VARS, State, proxy_values
 
 DEFAULT_ENDPOINT = "http://127.0.0.1:7890"
 DEFAULT_NO_PROXY = "localhost,127.0.0.1,::1"
 
-# Upper bound for the `status --check` connect probe, in seconds.
+# Upper bound for the whole `status --check` probe (DNS + TCP connect), in
+# seconds. The contract is "returns within one second"; leave margin for
+# process startup.
 PROBE_TIMEOUT = 0.5
-
-PROXY_URL_KEYS = ("http_proxy", "https_proxy", "HTTP_PROXY", "HTTPS_PROXY")
-
-SHELL_SNIPPET_START = "# >>> proxy-switcher >>>"
-SHELL_SNIPPET_END = "# <<< proxy-switcher <<<"
 
 
 def home_dir() -> str:
@@ -76,8 +74,14 @@ class Settings:
     exclude: tuple[str, ...] = ()
 
 
+@dataclass
+class StatusContext:
+    home: str
+    config_home: str
+
+
 def _known_carriers() -> set[str]:
-    return set(carrier_names()) | set(READ_ONLY)
+    return set(carrier_names())
 
 
 def _exclude_list(path: str, raw) -> tuple[str, ...]:
@@ -122,223 +126,11 @@ def load_settings() -> Settings:
     return Settings(endpoint, no_proxy, excluded)
 
 
-def load_config() -> tuple[str, str]:
-    settings = load_settings()
-    return settings.endpoint, settings.no_proxy
-
-
-def carrier_paths() -> dict[str, str]:
-    return {
-        "niri": os.path.join(config_home(), "niri", "config.kdl"),
-        "shell": os.path.join(home_dir(), ".zshrc"),
-        "npm": os.path.join(home_dir(), ".npmrc"),
-        "pnpm": os.path.join(config_home(), "pnpm", "config.yaml"),
-        "ssh": os.path.join(home_dir(), ".ssh", "config"),
-        "docker": "/etc/docker/daemon.json",
-    }
-
-
-# --- KDL ---------------------------------------------------------------
-
-
-def niri_state(path: str) -> str:
-    try:
-        with open(path, encoding="utf-8", errors="replace") as handle:
-            variables = parse_kdl_environment(handle.read())
-    except OSError:
-        return "off"
-    for key in PROXY_URL_KEYS:
-        if variables.get(key):
-            return "on"
-    return "off"
-
-
-# --- shell rc ----------------------------------------------------------
-
-
-SHELL_PROXY_VARS = PROXY_URL_KEYS + ("no_proxy", "NO_PROXY")
-
-
-def extract_shell_snippet(text: str) -> str | None:
-    lines = text.splitlines()
-    start = None
-    for index, line in enumerate(lines):
-        stripped = line.strip()
-        if stripped == SHELL_SNIPPET_START and start is None:
-            start = index
-        elif stripped == SHELL_SNIPPET_END and start is not None:
-            return "\n".join(lines[start : index + 1])
-    if start is not None:
-        return "\n".join(lines[start:])
-    return None
-
-
-def unquote(value: str) -> str:
-    value = value.strip()
-    if len(value) >= 2 and value[0] == value[-1] and value[0] in "\"'":
-        return value[1:-1]
-    return value
-
-
-def shell_state(path: str) -> str:
-    text = read_text(path)
-    if text is None:
-        return "off"
-
-    snippet = extract_shell_snippet(text)
-    scope = snippet if snippet is not None else text
-    values: dict[str, str] = {}
-
-    for line in scope.splitlines():
-        stripped = line.strip()
-        if not stripped or stripped.startswith("#"):
-            continue
-        assignment = re.match(r"(?:export\s+)?([A-Za-z_][A-Za-z0-9_]*)=(.*)$", stripped)
-        if assignment:
-            name = assignment.group(1)
-            if name in SHELL_PROXY_VARS:
-                values[name] = unquote(assignment.group(2))
-            continue
-        unset = re.match(r"unset\s+(.+)$", stripped)
-        if unset:
-            for name in re.findall(r"[A-Za-z_][A-Za-z0-9_]*", unset.group(1)):
-                if name in SHELL_PROXY_VARS:
-                    values[name] = ""
-
-    return "on" if any(values.get(key) for key in PROXY_URL_KEYS) else "off"
-
-
-# --- npm and pnpm ------------------------------------------------------
-
-
-def npm_state(path: str) -> str:
-    text = read_text(path)
-    if text is None:
-        return "off"
-
-    values: dict[str, str] = {}
-    for line in text.splitlines():
-        stripped = line.strip()
-        if not stripped or stripped[0] in "#;":
-            continue
-        if "=" not in stripped:
-            continue
-        key, value = stripped.split("=", 1)
-        key = key.strip().lower()
-        if key in ("proxy", "https-proxy"):
-            values[key] = unquote(value)
-    return "on" if any(values.get(key) for key in values) else "off"
-
-
-def strip_yaml_comment(raw: str) -> str:
-    in_single = False
-    in_double = False
-    index = 0
-    while index < len(raw):
-        char = raw[index]
-        if in_single:
-            if char == "'":
-                in_single = False
-        elif in_double:
-            if char == "\\":
-                index += 2
-                continue
-            if char == '"':
-                in_double = False
-        elif char == "'":
-            in_single = True
-        elif char == '"':
-            in_double = True
-        elif char == "#" and (index == 0 or raw[index - 1] in " \t"):
-            return raw[:index]
-        index += 1
-    return raw
-
-
-def yaml_scalar(raw: str) -> str:
-    value = strip_yaml_comment(raw).strip()
-    if value in ("", "~", "null", "Null", "NULL"):
-        return ""
-    if len(value) >= 2 and value[0] == value[-1] == "'":
-        return value[1:-1].replace("''", "'")
-    return unquote(value)
-
-
-def pnpm_state(path: str) -> str:
-    text = read_text(path)
-    if text is None:
-        return "off"
-
-    values: dict[str, str] = {}
-    for line in text.splitlines():
-        if not line or line[0] in " \t#":
-            continue
-        entry = re.match(r"([A-Za-z0-9_.-]+)\s*:\s*(.*)$", line)
-        if not entry:
-            continue
-        key = entry.group(1)
-        if key in ("httpProxy", "httpsProxy"):
-            values[key] = yaml_scalar(entry.group(2))
-    return "on" if any(values.get(key) for key in values) else "off"
-
-
-# --- ssh ---------------------------------------------------------------
-
-
-def ssh_blocks(text: str) -> list[dict]:
-    blocks: list[dict] = []
-    current: dict | None = None
-    for line in text.splitlines():
-        stripped = line.strip()
-        if not stripped or stripped.startswith("#"):
-            continue
-        directive = re.match(r"([A-Za-z][A-Za-z0-9]*)\s*(?:=\s*|\s+)(.*)$", stripped)
-        if not directive:
-            continue
-        keyword = directive.group(1).lower()
-        value = directive.group(2).strip()
-        if keyword == "host":
-            current = {"patterns": value.split(), "proxy": None}
-            blocks.append(current)
-        elif keyword == "match":
-            current = None
-        elif keyword == "proxycommand" and current is not None:
-            if current["proxy"] is None:
-                current["proxy"] = value
-    return blocks
-
-
-def ssh_state(path: str) -> str:
-    text = read_text(path)
-    if text is None:
-        return "off"
-
-    for block in ssh_blocks(text):
-        if not any(pattern.lower() == "github.com" for pattern in block["patterns"]):
-            continue
-        proxy = block["proxy"]
-        if not proxy or proxy.split()[0].lower() == "none":
-            return "off"
-        return "on"
-    return "off"
-
-
-# --- status ------------------------------------------------------------
-
-
-def read_text(path: str) -> str | None:
-    try:
-        with open(path, encoding="utf-8", errors="replace") as handle:
-            return handle.read()
-    except OSError:
-        return None
-
-
 def carrier_view(
     name: str,
     state: str,
     path: str,
-    tools: list[str],
+    tools: tuple[str, ...],
     note: str,
     skipped: bool = False,
 ) -> dict:
@@ -348,35 +140,53 @@ def carrier_view(
         "name": name,
         "state": state,
         "path": path,
-        "tools": tools,
+        "tools": list(tools),
         "note": note,
         "skipped": skipped,
     }
 
 
-STATE_READERS = {
-    "niri": niri_state,
-    "shell": shell_state,
-    "npm": npm_state,
-    "pnpm": pnpm_state,
-    "ssh": ssh_state,
-}
+def _is_ip_literal(host: str) -> bool:
+    try:
+        ipaddress.ip_address(host)
+        return True
+    except ValueError:
+        return False
 
 
-def carrier_state(name: str, path: str) -> str:
-    """Prefer a registered carrier's own reader; fall back for the rest."""
-    carrier = get_carrier(name)
-    if carrier is not None:
-        return carrier.read_state(path)
-    reader = STATE_READERS.get(name)
-    return reader(path) if reader is not None else "unmanaged"
+def _resolve(host: str, port: int, deadline: float):
+    """Resolve ``host`` within the deadline, or return ``None``."""
+    if _is_ip_literal(host):
+        family = socket.AF_INET6 if ":" in host else socket.AF_INET
+        return [(family, (host, port))]
+
+    result: list = []
+
+    def worker() -> None:
+        try:
+            result.extend(
+                (info[0], info[4][:2])
+                for info in socket.getaddrinfo(
+                    host, port, type=socket.SOCK_STREAM
+                )
+            )
+        except (OSError, UnicodeError, ValueError):
+            pass
+
+    thread = threading.Thread(target=worker, daemon=True)
+    thread.start()
+    thread.join(max(0.0, deadline - time.monotonic()))
+    if thread.is_alive() or not result:
+        return None
+    return result
 
 
 def probe_endpoint(endpoint: str) -> dict:
-    """Probe the endpoint with a bounded loopback-style TCP connect.
+    """Probe the endpoint with a bounded, local-only TCP connect.
 
     Only a TCP handshake is attempted: no bytes are written, so no HTTP
-    request is made. Unreachable is a valid result, not an error.
+    request is made. DNS resolution shares the same timeout budget, so an
+    unreachable resolver or host reports ``down`` instead of hanging.
     """
     parsed = urlsplit(endpoint)
     try:
@@ -388,80 +198,56 @@ def probe_endpoint(endpoint: str) -> dict:
         port = 80
 
     state = "down"
-    try:
-        with socket.create_connection((host, port), timeout=PROBE_TIMEOUT):
+    deadline = time.monotonic() + PROBE_TIMEOUT
+    addresses = _resolve(host, port, deadline)
+    for family, address in addresses or ():
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            break
+        sock = socket.socket(family, socket.SOCK_STREAM)
+        sock.settimeout(remaining)
+        try:
+            sock.connect(address)
             state = "up"
-    except (OSError, ValueError):
-        state = "down"
+            break
+        except OSError:
+            continue
+        finally:
+            sock.close()
 
     return {"state": state, "host": host, "port": port}
 
 
-def collect_status(check: bool = False) -> dict:
+def collect_status(check: bool = False, endpoint: str | None = None) -> dict:
     settings = load_settings()
-    endpoint, no_proxy = settings.endpoint, settings.no_proxy
+    chosen = endpoint or settings.endpoint
+    no_proxy = settings.no_proxy
     excluded = set(settings.exclude)
-    paths = carrier_paths()
-    ssh = carrier_state("ssh", paths["ssh"])
-    ssh_note = ""
-    if ssh == "off":
-        ssh_note = "GitHub SSH will connect directly; direct access is unreachable"
+    context = StatusContext(home=home_dir(), config_home=config_home())
+
+    rows = []
+    for carrier in carriers.all_carriers():
+        path = carrier.resolve(context)
+        state = carrier.read_state(path)
+        note = carrier.note_off if state == State.OFF and carrier.note_off else carrier.note
+        rows.append(
+            carrier_view(
+                carrier.name,
+                state,
+                path,
+                carrier.tools,
+                note,
+                skipped=carrier.name in excluded,
+            )
+        )
+
     status = {
-        "endpoint": endpoint,
+        "endpoint": chosen,
         "no_proxy": no_proxy,
-        "carriers": [
-            carrier_view(
-                "niri",
-                carrier_state("niri", paths["niri"]),
-                paths["niri"],
-                ["niri-spawned processes", "git", "curl", "GUI apps"],
-                "",
-                skipped="niri" in excluded,
-            ),
-            carrier_view(
-                "shell",
-                carrier_state("shell", paths["shell"]),
-                paths["shell"],
-                ["interactive shells"],
-                "",
-                skipped="shell" in excluded,
-            ),
-            carrier_view(
-                "npm",
-                carrier_state("npm", paths["npm"]),
-                paths["npm"],
-                ["npm", "yarn v1"],
-                "npm and yarn v1 share this file",
-                skipped="npm" in excluded,
-            ),
-            carrier_view(
-                "pnpm",
-                carrier_state("pnpm", paths["pnpm"]),
-                paths["pnpm"],
-                ["pnpm"],
-                "",
-                skipped="pnpm" in excluded,
-            ),
-            carrier_view(
-                "ssh",
-                ssh,
-                paths["ssh"],
-                ["GitHub SSH (github.com)"],
-                ssh_note,
-                skipped="ssh" in excluded,
-            ),
-            carrier_view(
-                "docker",
-                "unmanaged",
-                paths["docker"],
-                ["docker daemon"],
-                "read-only: needs root and a daemon restart",
-                skipped="docker" in excluded,
-            ),
-        ],
+        "carriers": rows,
     }
     if check:
-        status["check"] = probe_endpoint(endpoint)
+        status["check"] = probe_endpoint(chosen)
     return status
 
 
@@ -502,79 +288,24 @@ def render_human(status: dict) -> str:
     return "\n".join(lines)
 
 
-def command_status(arguments: list[str]) -> int:
-    parser = argparse.ArgumentParser(
-        prog="proxy status", add_help=False, allow_abbrev=False
-    )
-    parser.add_argument("--json", action="store_true")
-    parser.add_argument("--check", action="store_true")
-    try:
-        options, unknown = parser.parse_known_args(arguments)
-    except SystemExit:
-        return 2
-    if unknown:
-        print(f"proxy status: unknown argument: {unknown[0]}", file=sys.stderr)
-        return 2
+def status_output(check: bool, as_json: bool, endpoint: str | None) -> str:
+    status = collect_status(check=check, endpoint=endpoint)
+    if as_json:
+        return json.dumps(status, ensure_ascii=False, indent=2)
+    return render_human(status)
 
-    try:
-        status = collect_status(check=options.check)
-    except ConfigError as error:
-        print(f"proxy: {error}", file=sys.stderr)
-        return 1
 
-    if options.json:
-        import json
-
-        print(json.dumps(status, ensure_ascii=False, indent=2))
+def env_output(endpoint: str, no_proxy: str) -> str:
+    context = StatusContext(home=home_dir(), config_home=config_home())
+    carrier = get_carrier("shell")
+    path = carrier.resolve(context)
+    state = carrier.read_state(path)
+    values = proxy_values(endpoint, no_proxy)
+    lines = []
+    if state == State.ON:
+        for name in PROXY_VARS:
+            lines.append(f"export {name}={shlex.quote(values[name])}")
     else:
-        print(render_human(status))
-    return 0
-
-
-def command_env(arguments: list[str]) -> int:
-    parser = argparse.ArgumentParser(prog="proxy env", add_help=False, allow_abbrev=False)
-    try:
-        _, unknown = parser.parse_known_args(arguments)
-    except SystemExit:
-        return 2
-    if unknown:
-        print(f"proxy env: unknown argument: {unknown[0]}", file=sys.stderr)
-        return 2
-
-    try:
-        endpoint, no_proxy = load_config()
-        # `env` feeds the current interactive shell, and the shell carrier is
-        # the one that owns that state: it overrides the niri environment block.
-        state = carrier_state("shell", carrier_paths()["shell"])
-    except ConfigError as error:
-        print(f"proxy: {error}", file=sys.stderr)
-        return 1
-
-    values = {
-        "http_proxy": endpoint,
-        "https_proxy": endpoint,
-        "HTTP_PROXY": endpoint,
-        "HTTPS_PROXY": endpoint,
-        "no_proxy": no_proxy,
-        "NO_PROXY": no_proxy,
-    }
-    if state == "on":
-        for name in SHELL_PROXY_VARS:
-            print(f"export {name}={shlex.quote(values[name])}")
-    else:
-        for name in SHELL_PROXY_VARS:
-            print(f"unset {name}")
-    return 0
-
-
-def main(argv: list[str]) -> int:
-    if not argv or argv[0] not in ("status", "env"):
-        print("proxy: helper expects the status or env command", file=sys.stderr)
-        return 2
-    if argv[0] == "env":
-        return command_env(argv[1:])
-    return command_status(argv[1:])
-
-
-if __name__ == "__main__":
-    sys.exit(main(sys.argv[1:]))
+        for name in PROXY_VARS:
+            lines.append(f"unset {name}")
+    return "\n".join(lines)

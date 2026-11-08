@@ -4,9 +4,8 @@
 #
 # The "up" case is proven with a real loopback TCP listener that records any
 # bytes it receives: a pure connect probe must leave that record empty, which
-# is how we prove no HTTP request was sent. The timeout case uses an address
-# from the TEST-NET-1 documentation range (RFC 5737), so nothing is routed to
-# the public internet.
+# is how we prove no HTTP request was sent. Timeout and resolution cases stay
+# offline: closed loopback ports and a hostname that fails before any DNS query.
 
 load "${BATS_TEST_DIRNAME}/helpers/fixture.bash"
 
@@ -158,6 +157,21 @@ TOML
   [ "$(printf '%s\n' "$output" | jq -r '.check.port')" -eq "$port" ]
 }
 
+@test "status --check follows --proxy instead of the configured endpoint" {
+  start_probe_server
+  local port
+  port="$(cat "$PROBE_PORT_FILE")"
+  write_proxy_config <<'TOML'
+endpoint = "http://127.0.0.1:9"
+TOML
+
+  run_proxy --proxy "http://127.0.0.1:${port}" status --check --json
+
+  [ "$status" -eq 0 ]
+  [ "$(printf '%s\n' "$output" | jq -r '.check.state')" = "up" ]
+  [ "$(printf '%s\n' "$output" | jq -r '.endpoint')" = "http://127.0.0.1:${port}" ]
+}
+
 @test "status without --check does not probe and has no check field" {
   start_probe_server
   write_proxy_config <<TOML
@@ -172,9 +186,43 @@ TOML
   [ ! -f "$PROBE_RECEIVED_FILE" ]
 }
 
-@test "status --check returns within one second when the endpoint does not answer" {
-  write_proxy_config <<'TOML'
-endpoint = "http://192.0.2.1:9"
+@test "status --check returns within one second when a loopback port is closed" {
+  write_proxy_config <<TOML
+endpoint = "http://127.0.0.1:$(free_port)"
+TOML
+
+  local started finished elapsed_ms
+  started="$(date +%s%N)"
+  run_proxy status --check
+  finished="$(date +%s%N)"
+
+  [ "$status" -eq 0 ]
+  elapsed_ms=$(( (finished - started) / 1000000 ))
+  [ "$elapsed_ms" -lt 1000 ]
+  [[ "$(endpoint_line)" =~ ^endpoint[[:space:]]+.*[[:space:]]down$ ]]
+}
+
+@test "status --check resolves a loopback hostname without external DNS" {
+  start_probe_server
+  local port
+  port="$(cat "$PROBE_PORT_FILE")"
+  write_proxy_config <<TOML
+endpoint = "http://localhost:${port}"
+TOML
+
+  run_proxy status --check
+
+  [ "$status" -eq 0 ]
+  [[ "$(endpoint_line)" =~ ^endpoint[[:space:]]+.*[[:space:]]up$ ]]
+}
+
+@test "status --check returns within one second when the hostname cannot be resolved" {
+  # A label longer than 63 bytes is rejected before any DNS query, so this
+  # stays offline while exercising the resolution-failure path.
+  local long_label
+  long_label="$(printf 'a%.0s' $(seq 1 70))"
+  write_proxy_config <<TOML
+endpoint = "http://${long_label}.invalid:9"
 TOML
 
   local started finished elapsed_ms

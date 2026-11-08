@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Shared snapshot / manifest / restore engine for proxy-switcher.
+"""Shared snapshot / manifest / switch engine for proxy-switcher.
 
 The engine owns everything that is the same for every carrier:
 
@@ -14,7 +14,6 @@ Carriers only describe their path and how to render ``on`` / ``off``.
 
 from __future__ import annotations
 
-import argparse
 import hashlib
 import json
 import os
@@ -23,12 +22,9 @@ import sys
 import tempfile
 from dataclasses import dataclass
 from datetime import datetime, timezone
-from urllib.parse import urlsplit
 
-import proxy_helper
-from carriers import READ_ONLY
 from carriers import get as get_carrier
-from carriers import managed_names
+from proxy_common import Action, State
 
 MANIFEST_VERSION = 1
 
@@ -59,6 +55,20 @@ class Context:
 
     def warn(self, message: str) -> None:
         print(f"proxy: warning: {message}", file=sys.stderr)
+
+
+@dataclass
+class Plan:
+    name: str
+    carrier: object
+    path: str
+    current: bytes | None
+    current_hash: str | None
+    mode: int | None
+    entry: dict | None
+    wanted: bytes | None
+    changed: bool
+    original_existed: bool
 
 
 def hash_bytes(data: bytes | None) -> str | None:
@@ -188,34 +198,16 @@ def create_snapshot(
     return snapshot_dir, snapshot_file
 
 
-def target_bytes(
-    carrier, entry: dict | None, current: bytes | None, context: Context, action: str
-):
-    """Return the bytes the carrier wants on disk for this action."""
-    if carrier.off_strategy == "restore" and action == "off":
-        if entry is None:
-            return current
-        if not entry.get("original_existed"):
-            return None
-        snapshot = entry.get("snapshot")
-        if not snapshot:
-            raise EngineError(
-                f"{carrier.name}: manifest has no snapshot to restore; "
-                "re-run with --force is not enough, remove the manifest entry"
-            )
-        restored = read_bytes(snapshot)
-        if restored is None:
-            raise EngineError(f"{carrier.name}: snapshot {snapshot} is missing")
-        return restored
-
-    text = "" if current is None else current.decode("utf-8")
-    if action == "on":
-        return carrier.render_on(text, context).encode("utf-8")
-    return carrier.render_off(text, context).encode("utf-8")
-
-
 def _timestamp() -> str:
     return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+def _original_region_existed(carrier, current: bytes | None) -> bool:
+    if current is None:
+        return False
+    if carrier.region_exists is None:
+        return True
+    return carrier.region_exists(current.decode("utf-8"))
 
 
 def select_carriers(
@@ -233,10 +225,6 @@ def select_carriers(
 
         carrier = get_carrier(name)
         if carrier is None:
-            if name in READ_ONLY:
-                raise UsageError(
-                    f"carrier {name} is {READ_ONLY[name]} and cannot be switched"
-                )
             raise UsageError(f"unknown carrier: {name}")
         if not carrier.managed:
             raise UsageError(f"carrier {name} is read-only and cannot be switched")
@@ -249,33 +237,77 @@ def select_carriers(
     return selected, skipped
 
 
-def report_failures(failures: list[tuple[str, str]]) -> None:
-    for name, message in failures:
-        print(f"proxy: {name}: {message}", file=sys.stderr)
+def resolve_action(context: Context, action: Action, selected: list[str]) -> Action:
+    if action is not Action.TOGGLE:
+        return action
+    states = []
+    for name in selected:
+        carrier = get_carrier(name)
+        states.append(carrier.read_state(carrier.resolve(context)))
+    # Any carrier that is not fully on means "turn everything on".
+    if all(state == State.ON for state in states):
+        return Action.OFF
+    return Action.ON
 
 
-def switch(context: Context, action: str, names: list[str]) -> int:
-    selected, skipped = select_carriers(context, names)
-    manifest = load_manifest(context)
-    entries = manifest["carriers"]
+def _restore_bytes(name: str, entry: dict) -> bytes | None:
+    if entry.get("original_hash") is None:
+        return None
+    snapshot = entry.get("snapshot")
+    if not snapshot:
+        raise EngineError(
+            f"{name}: manifest has no snapshot to restore; "
+            "remove the manifest entry and switch again"
+        )
+    data = read_bytes(snapshot)
+    if data is None:
+        raise EngineError(f"{name}: snapshot {snapshot} is missing")
+    return data
 
-    for name in skipped:
-        print(f"{name}: skipped (excluded by configuration)")
-    if not selected:
-        return 0
 
-    effective = action
-    if action == "toggle":
-        states = []
-        for name in selected:
-            carrier = get_carrier(name)
-            states.append(carrier.read_state(carrier.resolve(context)))
-        # Any carrier that is not fully on means "turn everything on".
-        effective = "off" if all(state == "on" for state in states) else "on"
+def _target_bytes(
+    carrier, entry: dict | None, current: bytes | None, context: Context, action: Action
+) -> bytes | None:
+    """Return the bytes the carrier wants on disk for this action."""
+    if action is Action.RESTORE:
+        if entry is None:
+            raise EngineError("no snapshot to restore")
+        return _restore_bytes(carrier.name, entry)
 
-    plans: list[dict] = []
-    conflicts: list[tuple[str, str, str | None, str | None]] = []
+    text = "" if current is None else current.decode("utf-8")
+    if action is Action.ON:
+        return carrier.render_on(text, context).encode("utf-8")
+
+    # Action.OFF: render the canonical no-proxy state. Never create a missing
+    # file, and remove a managed region that ``on`` created in the first place.
+    if current is None:
+        return None
+    if entry is not None:
+        if entry.get("original_hash") is None:
+            if carrier.delete_created_file:
+                return None
+            # Keep the shell rc: its explicit unsets override niri even though
+            # ``on`` created the file.
+            return carrier.render_off(text, context).encode("utf-8")
+        remove_region = not entry.get("original_existed", True)
+    else:
+        remove_region = False
+        if carrier.region_exists is not None and not carrier.region_exists(text):
+            return current
+    return carrier.render_off(text, context, remove_region=remove_region).encode("utf-8")
+
+
+def build_plans(
+    context: Context,
+    action: Action,
+    selected: list[str],
+    entries: dict,
+    explicit: bool,
+) -> tuple[list[Plan], list[tuple], list[tuple[str, str]], list[str]]:
+    plans: list[Plan] = []
+    conflicts: list[tuple] = []
     failures: list[tuple[str, str]] = []
+    unstarted: list[str] = []
 
     for name in selected:
         carrier = get_carrier(name)
@@ -290,21 +322,20 @@ def switch(context: Context, action: str, names: list[str]) -> int:
             if entry is not None and current_hash != expected:
                 conflicts.append((name, path, expected, current_hash))
 
-            if (
-                carrier.off_strategy == "restore"
-                and effective == "off"
-                and entry is None
-                and carrier.read_state(path) == "on"
-            ):
-                failures.append(
-                    (
-                        name,
-                        "no snapshot to restore; the file was left unchanged",
+            if action is Action.RESTORE and entry is None:
+                if explicit:
+                    failures.append(
+                        (name, "no snapshot to restore; nothing was changed")
                     )
-                )
+                else:
+                    unstarted.append(name)
                 continue
 
-            wanted = target_bytes(carrier, entry, current, context, effective)
+            if entry is not None:
+                original_existed = entry.get("original_existed", current is not None)
+            else:
+                original_existed = _original_region_existed(carrier, current)
+            wanted = _target_bytes(carrier, entry, current, context, action)
         except UnicodeDecodeError as error:
             failures.append((name, f"{path} is not valid UTF-8: {error}"))
             continue
@@ -313,33 +344,158 @@ def switch(context: Context, action: str, names: list[str]) -> int:
             continue
 
         plans.append(
-            {
-                "name": name,
-                "carrier": carrier,
-                "path": path,
-                "current": current,
-                "current_hash": current_hash,
-                "mode": mode,
-                "entry": entry,
-                "wanted": wanted,
-                "changed": wanted != current,
-            }
+            Plan(
+                name=name,
+                carrier=carrier,
+                path=path,
+                current=current,
+                current_hash=current_hash,
+                mode=mode,
+                entry=entry,
+                wanted=wanted,
+                changed=wanted != current,
+                original_existed=original_existed,
+            )
         )
 
-    if conflicts:
-        for name, path, expected, found in conflicts:
-            print(
-                f"proxy: conflict: {name} at {path} changed since "
-                "proxy-switcher last wrote it",
-                file=sys.stderr,
-            )
-            print(f"proxy:   expected {expected or 'the file to be absent'}", file=sys.stderr)
-            print(f"proxy:   found    {found or 'the file to be absent'}", file=sys.stderr)
+    return plans, conflicts, failures, unstarted
+
+
+def report_failures(failures: list[tuple[str, str]]) -> None:
+    for name, message in failures:
+        print(f"proxy: {name}: {message}", file=sys.stderr)
+
+
+def report_conflicts(conflicts: list[tuple]) -> bool:
+    """Print every conflict; return whether the caller may continue."""
+    for name, path, expected, found in conflicts:
         print(
-            "proxy: refusing to overwrite; review the file, then re-run with "
-            "--force to replace it",
+            f"proxy: conflict: {name} at {path} changed since "
+            "proxy-switcher last wrote it",
             file=sys.stderr,
         )
+        print(
+            f"proxy:   expected {expected or 'the file to be absent'}",
+            file=sys.stderr,
+        )
+        print(
+            f"proxy:   found    {found or 'the file to be absent'}",
+            file=sys.stderr,
+        )
+    print(
+        "proxy: refusing to overwrite; review the file, then re-run with "
+        "--force to replace it",
+        file=sys.stderr,
+    )
+    return False
+
+
+def _display_action(action: Action) -> str:
+    if action is Action.RESTORE:
+        return "restored"
+    return action.value
+
+
+def _write_mode(plan: Plan, action: Action) -> int:
+    if action is Action.RESTORE:
+        original = (plan.entry or {}).get("original_mode")
+        if original is not None:
+            return original
+    return plan.mode if plan.mode is not None else plan.carrier.default_mode
+
+
+def _apply_plan(
+    context: Context, manifest: dict, action: Action, plan: Plan
+) -> bool:
+    """Apply one plan and update the manifest in place. Returns whether it wrote."""
+    entries = manifest["carriers"]
+    entry = plan.entry
+    new_entry = entry is None
+    snapshot_file = None
+
+    if new_entry:
+        snapshot_dir, snapshot_file = create_snapshot(
+            context, plan.carrier, plan.current
+        )
+        entry = {
+            "state": action.value,
+            "path": plan.path,
+            "snapshot_dir": snapshot_dir,
+            "snapshot": snapshot_file,
+            "original_existed": plan.original_existed,
+            "original_hash": plan.current_hash,
+            "original_mode": plan.mode,
+            "written_hash": None,
+            "updated_at": _timestamp(),
+        }
+        entries[plan.name] = entry
+
+    wrote = False
+    if plan.changed:
+        if plan.wanted is None:
+            remove_file(plan.path)
+        else:
+            atomic_write(plan.path, plan.wanted, _write_mode(plan, action))
+        wrote = True
+
+    entry["state"] = plan.carrier.read_state(plan.path)
+    entry["written_hash"] = hash_bytes(plan.wanted)
+    if wrote:
+        entry["updated_at"] = _timestamp()
+
+    if context.verbose:
+        if plan.changed:
+            if plan.wanted is None:
+                print(f"proxy: {plan.name}: removed {plan.path}")
+            else:
+                print(
+                    f"proxy: {plan.name}: wrote {plan.path} "
+                    f"({len(plan.wanted)} bytes)"
+                )
+            if new_entry:
+                if snapshot_file is None:
+                    print(f"proxy: {plan.name}: no snapshot (file was absent)")
+                else:
+                    print(f"proxy: {plan.name}: snapshot {snapshot_file}")
+        else:
+            print(f"proxy: {plan.name}: no change to {plan.path}")
+
+    if wrote:
+        print(f"{plan.name}: {_display_action(action)}")
+        if plan.carrier.after_write is not None:
+            try:
+                reloaded = plan.carrier.after_write(context)
+            except Exception as error:  # noqa: BLE001 - report, do not abort
+                context.warn(f"{plan.name}: post-write hook failed: {error}")
+                reloaded = False
+            entry["pending_reload"] = not reloaded
+    else:
+        print(f"{plan.name}: already {_display_action(action)}")
+
+    return wrote or new_entry
+
+
+def switch(
+    context: Context, action: Action, names: list[str], explicit: bool = True
+) -> int:
+    selected, skipped = select_carriers(context, names)
+    for name in skipped:
+        print(f"{name}: skipped (excluded by configuration)")
+    if not selected:
+        return 0
+
+    effective = resolve_action(context, action, selected)
+    manifest = load_manifest(context)
+    entries = manifest["carriers"]
+
+    plans, conflicts, failures, unstarted = build_plans(
+        context, effective, selected, entries, explicit
+    )
+    for name in unstarted:
+        print(f"{name}: nothing to restore (no snapshot)")
+
+    if conflicts:
+        report_conflicts(conflicts)
         if not context.force:
             report_failures(failures)
             print(
@@ -350,10 +506,13 @@ def switch(context: Context, action: str, names: list[str]) -> int:
 
     if context.dry_run:
         for plan in plans:
-            if plan["changed"]:
-                print(f"{plan['name']}: would turn {effective}")
+            if plan.changed:
+                if effective is Action.RESTORE:
+                    print(f"{plan.name}: would restore {plan.path}")
+                else:
+                    print(f"{plan.name}: would turn {effective.value} {plan.path}")
             else:
-                print(f"{plan['name']}: already {effective}")
+                print(f"{plan.name}: already {_display_action(effective)} {plan.path}")
         if failures:
             report_failures(failures)
             not_changed = ", ".join(name for name, _ in failures) or "none"
@@ -369,78 +528,16 @@ def switch(context: Context, action: str, names: list[str]) -> int:
     failed_names = [name for name, _ in failures]
 
     for plan in plans:
-        name = plan["name"]
-        carrier = plan["carrier"]
-        entry = plan["entry"]
-
         try:
-            new_entry = entry is None
-            if new_entry:
-                snapshot_dir, snapshot_file = create_snapshot(
-                    context, carrier, plan["current"]
-                )
-
-            wrote = False
-            if plan["changed"]:
-                if plan["wanted"] is None:
-                    remove_file(plan["path"])
-                else:
-                    if carrier.off_strategy == "restore" and effective == "off":
-                        write_mode = (entry or {}).get("original_mode")
-                        if write_mode is None:
-                            write_mode = (
-                                plan["mode"]
-                                if plan["mode"] is not None
-                                else carrier.default_mode
-                            )
-                    else:
-                        write_mode = (
-                            plan["mode"]
-                            if plan["mode"] is not None
-                            else carrier.default_mode
-                        )
-                    atomic_write(plan["path"], plan["wanted"], write_mode)
-                wrote = True
-
-            if new_entry:
-                entry = {
-                    "state": effective,
-                    "path": plan["path"],
-                    "snapshot_dir": snapshot_dir,
-                    "snapshot": snapshot_file,
-                    "original_existed": plan["current"] is not None,
-                    "original_hash": plan["current_hash"],
-                    "original_mode": plan["mode"],
-                    "written_hash": None,
-                    "updated_at": _timestamp(),
-                }
-                entries[name] = entry
+            if _apply_plan(context, manifest, effective, plan):
                 manifest_dirty = True
-
-            entry["state"] = effective
-            entry["written_hash"] = hash_bytes(plan["wanted"])
-            if wrote:
-                entry["updated_at"] = _timestamp()
-                manifest_dirty = True
-
-            if wrote:
-                print(f"{name}: {effective}")
-                if carrier.after_write is not None:
-                    try:
-                        reloaded = carrier.after_write(context)
-                    except Exception as error:  # noqa: BLE001 - report, do not abort
-                        context.warn(f"{name}: post-write hook failed: {error}")
-                        reloaded = False
-                    entry["pending_reload"] = not reloaded
-                    manifest_dirty = True
-            else:
-                print(f"{name}: already {effective}")
-
-            if wrote:
-                changed_names.append(name)
+            if plan.changed:
+                changed_names.append(plan.name)
         except Exception as error:  # noqa: BLE001 - one carrier must not abort the rest
-            failures.append((name, str(error) or error.__class__.__name__))
-            failed_names.append(name)
+            failures.append(
+                (plan.name, str(error) or error.__class__.__name__)
+            )
+            failed_names.append(plan.name)
             continue
 
     if manifest_dirty:
@@ -467,101 +564,3 @@ def switch(context: Context, action: str, names: list[str]) -> int:
         return 1
 
     return 0
-
-
-def build_context(arguments: list[str], action: str) -> tuple[Context, list[str]]:
-    parser = argparse.ArgumentParser(prog=f"proxy {action}", add_help=False, allow_abbrev=False)
-    parser.add_argument("--force", action="store_true")
-    parser.add_argument("--dry-run", action="store_true")
-    parser.add_argument("--proxy")
-    parser.add_argument("-v", "--verbose", action="store_true")
-    parser.add_argument("carriers", nargs="*")
-    try:
-        options, unknown = parser.parse_known_args(arguments)
-    except SystemExit:
-        raise UsageError("") from None
-    if unknown:
-        raise UsageError(f"unknown argument: {unknown[0]}")
-
-    settings = proxy_helper.load_settings()
-    endpoint, no_proxy = settings.endpoint, settings.no_proxy
-    if options.proxy is not None:
-        parsed = urlsplit(options.proxy)
-        if parsed.scheme != "http" or not parsed.netloc:
-            raise UsageError(
-                f"--proxy must be an http URL such as {proxy_helper.DEFAULT_ENDPOINT}"
-            )
-        endpoint = options.proxy
-
-    names = options.carriers or managed_names()
-    context = Context(
-        home=proxy_helper.home_dir(),
-        config_home=proxy_helper.config_home(),
-        state_root=os.path.join(proxy_helper.state_home(), "proxy-switcher"),
-        endpoint=endpoint,
-        no_proxy=no_proxy,
-        excluded=frozenset(settings.exclude),
-        force=options.force,
-        dry_run=options.dry_run,
-        verbose=options.verbose,
-    )
-    return context, names
-
-
-def usage() -> str:
-    return """Usage: proxy <command> [options] [carrier...]
-
-Commands:
-  on [carrier...]     Turn managed carriers on (default: every managed carrier)
-  off [carrier...]    Turn managed carriers off
-  toggle [carrier...] Turn on unless every selected carrier is already on
-  status [--json]     Show the state of every proxy carrier
-
-Options for on/off/toggle:
-  --force            Overwrite a file that changed since the last switch
-  --dry-run          Show what would change without writing
-  --proxy <url>      Override the configured proxy endpoint
-  -v, --verbose      Explain what was done
-
-Configuration:
-  $XDG_CONFIG_HOME/proxy-switcher/config.toml accepts endpoint, no_proxy
-  and exclude (a list of carrier names to leave alone).
-
-Exit status: 0 success, 1 conflict/failure, 2 usage error.
-"""
-
-
-def main(argv: list[str]) -> int:
-    if not argv:
-        sys.stderr.write(usage())
-        return 2
-    action = argv[0]
-    if action not in ("on", "off", "toggle"):
-        print(f"proxy: unknown command: {action}", file=sys.stderr)
-        sys.stderr.write(usage())
-        return 2
-
-    try:
-        context, names = build_context(argv[1:], action)
-    except proxy_helper.ConfigError as error:
-        print(f"proxy: {error}", file=sys.stderr)
-        return 1
-    except UsageError as error:
-        if str(error):
-            print(f"proxy: {error}", file=sys.stderr)
-        sys.stderr.write(usage())
-        return 2
-
-    try:
-        return switch(context, action, names)
-    except UsageError as error:
-        print(f"proxy: {error}", file=sys.stderr)
-        sys.stderr.write(usage())
-        return 2
-    except EngineError as error:
-        print(f"proxy: {error}", file=sys.stderr)
-        return 1
-
-
-if __name__ == "__main__":
-    sys.exit(main(sys.argv[1:]))

@@ -110,7 +110,7 @@ NPM
   assert_npm_keys_once "$(npmrc_path)"
 }
 
-@test "off restores the original bytes and the 600 mode" {
+@test "off removes the proxy keys and keeps every other byte and the 600 mode" {
   write_npmrc_with_proxy
   cp "$(npmrc_path)" "$FIXTURE_ROOT/original"
   local original_hash
@@ -123,7 +123,31 @@ NPM
   run_proxy off npm
 
   [ "$status" -eq 0 ]
+  for key in proxy https-proxy noproxy; do
+    [ "$(grep -cE "^${key}=" "$(npmrc_path)")" -eq 0 ]
+  done
+  grep -qF 'registry=https://registry.npmmirror.com' "$(npmrc_path)"
+  grep -qF 'prefix=~/.npm-global' "$(npmrc_path)"
+  grep -qF 'old.example:3128' "$FIXTURE_ROOT/original"
+  ! grep -qF 'old.example:3128' "$(npmrc_path)"
+  [ "$(stat -c '%a' "$(npmrc_path)")" = "600" ]
+}
+
+@test "restore brings back hand-written proxy values that off removed" {
+  write_npmrc_with_proxy
+  cp "$(npmrc_path)" "$FIXTURE_ROOT/original"
+
+  run_proxy on npm
+  [ "$status" -eq 0 ]
+  run_proxy off npm
+  [ "$status" -eq 0 ]
+  ! grep -qF 'old.example:3128' "$(npmrc_path)"
+
+  run_proxy restore npm
+
+  [ "$status" -eq 0 ]
   assert_file_bytes "$(npmrc_path)" "$FIXTURE_ROOT/original"
+  grep -qF 'proxy=http://old.example:3128' "$(npmrc_path)"
   [ "$(stat -c '%a' "$(npmrc_path)")" = "600" ]
 }
 

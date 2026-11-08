@@ -13,6 +13,8 @@ from __future__ import annotations
 import os
 import re
 
+from proxy_common import line_ending
+
 from .model import Carrier
 
 NAME = "pnpm"
@@ -187,7 +189,7 @@ def _set_keys(text: str, values: dict[str, str]) -> str:
     result = "".join(lines)
     missing = [name for name in KEY_NAMES if name not in present]
     if missing:
-        newline = "\r\n" if "\r\n" in text else "\n"
+        newline = line_ending(text)
         rendered = [(name, _quoted(values[name], '"')) for name in missing]
         additions = newline.join(f"{name}: {value}" for name, value in rendered)
         if result and not result.endswith("\n"):
@@ -208,6 +210,22 @@ def read_state(path: str) -> str:
     return "off"
 
 
+def region_exists(text: str) -> bool:
+    return any(key in _parse_top_level(text) for key in KEY_NAMES)
+
+
+def _remove_keys(text: str, keys: tuple[str, ...]) -> str:
+    """Remove top-level lines for ``keys`` while keeping everything else."""
+    kept: list[str] = []
+    for line in text.splitlines(keepends=True):
+        match = _LINE_RE.match(line.rstrip("\r\n"))
+        if match and not match.group("indent"):
+            if _unquote_key(match.group("key")) in keys:
+                continue
+        kept.append(line)
+    return "".join(kept)
+
+
 def render_on(text: str, context) -> str:
     return _set_keys(
         text,
@@ -219,9 +237,8 @@ def render_on(text: str, context) -> str:
     )
 
 
-def render_off(text: str, context) -> str:
-    """Unused: ``off`` restores the snapshot byte for byte."""
-    return text
+def render_off(text: str, context, remove_region: bool = False) -> str:
+    return _remove_keys(text, KEY_NAMES)
 
 
 CARRIER = Carrier(
@@ -233,5 +250,5 @@ CARRIER = Carrier(
     read_state=read_state,
     render_on=render_on,
     render_off=render_off,
-    off_strategy="restore",
+    region_exists=region_exists,
 )

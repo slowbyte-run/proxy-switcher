@@ -250,6 +250,46 @@ TOML
     "$(ssh_config_path)"
 }
 
+@test "off removes a github.com block that on appended to an existing file" {
+  write_ssh_without_github
+  cp -p "$(ssh_config_path)" "$FIXTURE_ROOT/original"
+
+  run_proxy on ssh
+  [ "$status" -eq 0 ]
+  grep -qF 'Host github.com' "$(ssh_config_path)"
+
+  run_proxy off ssh
+  [ "$status" -eq 0 ]
+
+  cmp "$(ssh_config_path)" "$FIXTURE_ROOT/original"
+  ! grep -qF 'Host github.com' "$(ssh_config_path)"
+  ! grep -qF 'ProxyCommand none' "$(ssh_config_path)"
+}
+
+@test "off on an existing file without a github.com block changes nothing" {
+  write_ssh_without_github
+  local before
+  before="$(sha256sum "$(ssh_config_path)" | cut -d' ' -f1)"
+
+  run_proxy off ssh
+
+  [ "$status" -eq 0 ]
+  [ "$(sha256sum "$(ssh_config_path)" | cut -d' ' -f1)" = "$before" ]
+  ! grep -qF 'Host github.com' "$(ssh_config_path)"
+}
+
+@test "off removes a github.com block that on appended to a missing file" {
+  rm -f "$(ssh_config_path)"
+
+  run_proxy on ssh
+  [ "$status" -eq 0 ]
+  [ -f "$(ssh_config_path)" ]
+
+  run_proxy off ssh
+  [ "$status" -eq 0 ]
+  [ ! -e "$(ssh_config_path)" ]
+}
+
 @test "switching preserves the existing config permission bits" {
   write_ssh_tricky
   chmod 600 "$(ssh_config_path)"

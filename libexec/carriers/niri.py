@@ -6,19 +6,17 @@ import os
 import shutil
 import subprocess
 
-from kdl import parse_kdl_environment, update_environment
+from kdl import (
+    environment_block_exists,
+    parse_kdl_environment,
+    remove_environment_block,
+    update_environment,
+)
+from proxy_common import PROXY_URL_VARS, PROXY_VARS, proxy_values
 
 from .model import Carrier
 
 NAME = "niri"
-PROXY_KEYS = (
-    "http_proxy",
-    "https_proxy",
-    "HTTP_PROXY",
-    "HTTPS_PROXY",
-    "no_proxy",
-    "NO_PROXY",
-)
 
 
 def resolve(context) -> str:
@@ -31,31 +29,28 @@ def read_state(path: str) -> str:
             variables = parse_kdl_environment(handle.read())
     except OSError:
         return "off"
-    for key in ("http_proxy", "https_proxy", "HTTP_PROXY", "HTTPS_PROXY"):
+    for key in PROXY_URL_VARS:
         if variables.get(key):
             return "on"
     return "off"
 
 
-def _values(context, *, on: bool) -> dict[str, str | None]:
-    if not on:
-        return {key: None for key in PROXY_KEYS}
-    return {
-        "http_proxy": context.endpoint,
-        "https_proxy": context.endpoint,
-        "HTTP_PROXY": context.endpoint,
-        "HTTPS_PROXY": context.endpoint,
-        "no_proxy": context.no_proxy,
-        "NO_PROXY": context.no_proxy,
-    }
+def region_exists(text: str) -> bool:
+    return environment_block_exists(text)
+
+
+def _values(context) -> dict[str, str | None]:
+    return proxy_values(context.endpoint, context.no_proxy)
 
 
 def render_on(text: str, context) -> str:
-    return update_environment(text, _values(context, on=True))
+    return update_environment(text, _values(context))
 
 
-def render_off(text: str, context) -> str:
-    return update_environment(text, _values(context, on=False))
+def render_off(text: str, context, remove_region: bool = False) -> str:
+    if remove_region:
+        return remove_environment_block(text)
+    return update_environment(text, {key: None for key in PROXY_VARS})
 
 
 def after_write(context) -> bool:
@@ -102,5 +97,5 @@ CARRIER = Carrier(
     render_on=render_on,
     render_off=render_off,
     after_write=after_write,
-    off_strategy="render",
+    region_exists=region_exists,
 )
