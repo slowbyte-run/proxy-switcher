@@ -10,6 +10,7 @@ import importlib
 
 MODULES = (
     "niri",
+    "npm",
     "pnpm",
 )
 
