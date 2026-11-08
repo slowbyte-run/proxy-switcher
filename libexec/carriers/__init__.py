@@ -10,6 +10,10 @@ import importlib
 
 MODULES = (
     "niri",
+    "shell",
+    "npm",
+    "pnpm",
+    "ssh",
 )
 
 # Carriers that are shown in status but deliberately cannot be switched in v1.
