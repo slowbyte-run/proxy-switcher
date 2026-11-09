@@ -14,12 +14,15 @@ Carriers only describe their path and how to render ``on`` / ``off``.
 
 from __future__ import annotations
 
+import fcntl
 import hashlib
 import json
 import os
 import stat
 import sys
 import tempfile
+import time
+from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import UTC, datetime
 
@@ -27,6 +30,13 @@ from carriers import get as get_carrier
 from proxy_common import JSON_SCHEMA, Action, State
 
 MANIFEST_VERSION = 1
+
+# How long a switch waits for a concurrent one before giving up. The whole
+# read-modify-write transaction is covered, so a wedged process (or a slow
+# niri reload) is what this bound protects against; normal contention is
+# milliseconds. `PROXYSW_LOCK_TIMEOUT` overrides it for tests and scripts.
+LOCK_TIMEOUT_SECONDS = 5.0
+LOCK_TIMEOUT_VARIABLE = "PROXYSW_LOCK_TIMEOUT"
 
 
 class EngineError(Exception):
@@ -55,7 +65,7 @@ class Context:
         return os.path.join(self.state_root, "manifest.json")
 
     def warn(self, message: str) -> None:
-        print(f"proxy: warning: {message}", file=sys.stderr)
+        print(f"proxysw: warning: {message}", file=sys.stderr)
 
 
 @dataclass
@@ -384,27 +394,27 @@ def build_plans(
 
 def report_failures(failures: list[tuple[str, str]]) -> None:
     for name, message in failures:
-        print(f"proxy: {name}: {message}", file=sys.stderr)
+        print(f"proxysw: {name}: {message}", file=sys.stderr)
 
 
 def report_conflicts(conflicts: list[tuple]) -> bool:
     """Print every conflict; return whether the caller may continue."""
     for name, path, expected, found in conflicts:
         print(
-            f"proxy: conflict: {name} at {path} changed since "
+            f"proxysw: conflict: {name} at {path} changed since "
             "proxy-switcher last wrote it",
             file=sys.stderr,
         )
         print(
-            f"proxy:   expected {expected or 'the file to be absent'}",
+            f"proxysw:   expected {expected or 'the file to be absent'}",
             file=sys.stderr,
         )
         print(
-            f"proxy:   found    {found or 'the file to be absent'}",
+            f"proxysw:   found    {found or 'the file to be absent'}",
             file=sys.stderr,
         )
     print(
-        "proxy: refusing to overwrite; review the file, then re-run with "
+        "proxysw: refusing to overwrite; review the file, then re-run with "
         "--force to replace it",
         file=sys.stderr,
     )
@@ -512,18 +522,17 @@ def _apply_plan(context: Context, manifest: dict, action: Action, plan: Plan) ->
     if context.verbose:
         if plan.changed:
             if plan.wanted is None:
-                print(f"proxy: {plan.name}: removed {plan.path}")
+                print(f"proxysw: {plan.name}: removed {plan.path}")
             else:
-                print(
-                    f"proxy: {plan.name}: wrote {plan.path} ({len(plan.wanted)} bytes)"
-                )
+                written = f"proxysw: {plan.name}: wrote {plan.path}"
+                print(f"{written} ({len(plan.wanted)} bytes)")
             if new_entry:
                 if snapshot_file is None:
-                    print(f"proxy: {plan.name}: no snapshot (file was absent)")
+                    print(f"proxysw: {plan.name}: no snapshot (file was absent)")
                 else:
-                    print(f"proxy: {plan.name}: snapshot {snapshot_file}")
+                    print(f"proxysw: {plan.name}: snapshot {snapshot_file}")
         else:
-            print(f"proxy: {plan.name}: no change to {plan.path}")
+            print(f"proxysw: {plan.name}: no change to {plan.path}")
 
     if wrote:
         print(f"{plan.name}: {_display_action(action)}")
@@ -538,6 +547,92 @@ def _apply_plan(context: Context, manifest: dict, action: Action, plan: Plan) ->
         print(f"{plan.name}: already {_display_action(action)}")
 
     return wrote or new_entry
+
+
+def _lock_timeout() -> float:
+    raw = os.environ.get(LOCK_TIMEOUT_VARIABLE, "")
+    if not raw:
+        return LOCK_TIMEOUT_SECONDS
+    try:
+        return max(0.0, float(raw))
+    except ValueError:
+        return LOCK_TIMEOUT_SECONDS
+
+
+@contextmanager
+def state_lock(context: Context):
+    """Hold an exclusive lock for one read-modify-write transaction.
+
+    The lock is taken *before* the manifest is read. A lock around
+    ``save_manifest`` alone would not help: two processes could still plan
+    against the same stale bytes and the later writer would silently win.
+
+    The lock file lives outside ``state_root`` on purpose. It is runtime
+    coordination, not durable state, and a switch that decides to write nothing
+    (``restore`` with no snapshots) must leave the state directory untouched.
+
+    ``flock`` releases on close, so the descriptor is the whole lifetime.
+    """
+    path = _lock_path(context)
+    descriptor = os.open(path, os.O_RDWR | os.O_CREAT, 0o600)
+    try:
+        deadline = time.monotonic() + _lock_timeout()
+        while True:
+            try:
+                fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                break
+            except BlockingIOError:
+                if time.monotonic() >= deadline:
+                    raise EngineError(
+                        f"another proxysw is switching carriers (lock: {path}); "
+                        "wait for it to finish and try again"
+                    ) from None
+                time.sleep(0.05)
+        yield
+    finally:
+        os.close(descriptor)
+
+
+def _lock_dir() -> str:
+    """Where lock files go: the runtime dir, falling back to the temp dir.
+
+    ``$XDG_RUNTIME_DIR`` is cleared at logout, so a stale lock cannot outlive
+    the session. It is not always usable, though: a container or a session
+    manager that remounted ``/run`` leaves it read-only while still showing
+    mode 0700, which ``os.access`` cannot detect. Creating a probe file is the
+    only honest test, so each candidate is tried for real.
+
+    Both candidates are per-user directories, and the temp-dir fallback keeps
+    cron and CI working.
+    """
+    candidates = []
+    runtime = os.environ.get("XDG_RUNTIME_DIR", "")
+    if runtime and os.path.isabs(runtime):
+        candidates.append(runtime)
+    candidates.append(tempfile.gettempdir())
+
+    for base in candidates:
+        path = os.path.join(base, f"proxysw-{os.getuid()}")
+        try:
+            os.makedirs(path, mode=0o700, exist_ok=True)
+            probe_descriptor, probe_path = tempfile.mkstemp(dir=path, prefix=".probe-")
+        except OSError:
+            continue
+        os.close(probe_descriptor)
+        os.unlink(probe_path)
+        return path
+
+    raise EngineError(
+        "cannot create a lock directory in $XDG_RUNTIME_DIR or the temp "
+        "directory; set XDG_RUNTIME_DIR to a writable directory"
+    )
+
+
+def _lock_path(context: Context) -> str:
+    # One lock per state root: two checkouts with different XDG_STATE_HOME
+    # never need to wait for each other.
+    digest = hashlib.sha256(context.state_root.encode()).hexdigest()[:16]
+    return os.path.join(_lock_dir(), f"state-{digest}.lock")
 
 
 def switch(
@@ -558,6 +653,22 @@ def switch(
             )
         return 0
 
+    if context.dry_run:
+        # A preview writes nothing, so it must not create a lock file either:
+        # `--dry-run` promises the state directory is untouched.
+        return _switch(context, action, selected, skipped, explicit)
+
+    with state_lock(context):
+        return _switch(context, action, selected, skipped, explicit)
+
+
+def _switch(
+    context: Context,
+    action: Action,
+    selected: list[str],
+    skipped: list[str],
+    explicit: bool,
+) -> int:
     effective = resolve_action(context, action, selected)
     manifest = load_manifest(context)
     entries = manifest["carriers"]
@@ -590,7 +701,7 @@ def switch(
         if not context.force:
             report_failures(failures)
             print(
-                "proxy: no carriers were changed because of the conflict(s)",
+                "proxysw: no carriers were changed because of the conflict(s)",
                 file=sys.stderr,
             )
             return 1
@@ -608,7 +719,7 @@ def switch(
             report_failures(failures)
             not_changed = ", ".join(name for name, _ in failures) or "none"
             print(
-                f"proxy: partial completion: changed none; not changed {not_changed}",
+                f"proxysw: partial completion: changed none; not changed {not_changed}",
                 file=sys.stderr,
             )
             return 1
@@ -646,7 +757,7 @@ def switch(
         changed_text = ", ".join(changed_names) or "none"
         failed_text = ", ".join(dict.fromkeys(failed_names)) or "none"
         print(
-            f"proxy: partial completion: changed {changed_text}; "
+            f"proxysw: partial completion: changed {changed_text}; "
             f"not changed {failed_text}",
             file=sys.stderr,
         )

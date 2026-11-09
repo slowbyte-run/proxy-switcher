@@ -62,7 +62,7 @@ https-proxy=http://127.0.0.1:7890
 noproxy=localhost,127.0.0.1,::1
 NPM
 
-  run_proxy on npm
+  run_proxysw on npm
 
   [ "$status" -eq 0 ]
   assert_file_bytes "$(npmrc_path)" "$FIXTURE_ROOT/expected"
@@ -80,7 +80,7 @@ prefix=~/.npm-global
 noproxy=localhost,127.0.0.1,::1
 NPM
 
-  run_proxy on npm
+  run_proxysw on npm
 
   [ "$status" -eq 0 ]
   assert_file_bytes "$(npmrc_path)" "$FIXTURE_ROOT/expected"
@@ -103,7 +103,7 @@ https-proxy=http://127.0.0.1:7890
 noproxy=localhost,127.0.0.1,::1
 NPM
 
-  run_proxy on npm
+  run_proxysw on npm
 
   [ "$status" -eq 0 ]
   assert_file_bytes "$(npmrc_path)" "$FIXTURE_ROOT/expected"
@@ -116,11 +116,11 @@ NPM
   local original_hash
   original_hash="$(sha256sum "$(npmrc_path)" | cut -d' ' -f1)"
 
-  run_proxy on npm
+  run_proxysw on npm
   [ "$status" -eq 0 ]
   [ "$(sha256sum "$(npmrc_path)" | cut -d' ' -f1)" != "$original_hash" ]
 
-  run_proxy off npm
+  run_proxysw off npm
 
   [ "$status" -eq 0 ]
   for key in proxy https-proxy noproxy; do
@@ -137,13 +137,13 @@ NPM
   write_npmrc_with_proxy
   cp "$(npmrc_path)" "$FIXTURE_ROOT/original"
 
-  run_proxy on npm
+  run_proxysw on npm
   [ "$status" -eq 0 ]
-  run_proxy off npm
+  run_proxysw off npm
   [ "$status" -eq 0 ]
   ! grep -qF 'old.example:3128' "$(npmrc_path)"
 
-  run_proxy restore npm
+  run_proxysw restore npm
 
   [ "$status" -eq 0 ]
   assert_file_bytes "$(npmrc_path)" "$FIXTURE_ROOT/original"
@@ -154,7 +154,7 @@ NPM
 @test "on creates a missing npmrc with 600 and says so, off removes it again" {
   rm -f "$(npmrc_path)"
 
-  run_proxy on npm
+  run_proxysw on npm
 
   [ "$status" -eq 0 ]
   [[ "$output" == *"did not exist"* ]]
@@ -163,7 +163,7 @@ NPM
   [ "$(stat -c '%a' "$(npmrc_path)")" = "600" ]
   assert_npm_keys_once "$(npmrc_path)"
 
-  run_proxy off npm
+  run_proxysw off npm
 
   [ "$status" -eq 0 ]
   [ ! -e "$(npmrc_path)" ]
@@ -176,7 +176,7 @@ endpoint = "http://127.0.0.1:7895"
 no_proxy = "localhost,*.internal,10.0.0.1"
 TOML
 
-  run_proxy on npm
+  run_proxysw on npm
 
   [ "$status" -eq 0 ]
   grep -qF 'proxy=http://127.0.0.1:7895' "$(npmrc_path)"
@@ -186,13 +186,13 @@ TOML
 
 @test "repeated on is idempotent and adds no duplicate keys or snapshots" {
   write_npmrc_plain
-  run_proxy on npm
+  run_proxysw on npm
   [ "$status" -eq 0 ]
   local first_hash snapshots
   first_hash="$(sha256sum "$(npmrc_path)" | cut -d' ' -f1)"
   snapshots="$(proxy_snapshot_count)"
 
-  run_proxy on npm
+  run_proxysw on npm
 
   [ "$status" -eq 0 ]
   [ "$(sha256sum "$(npmrc_path)" | cut -d' ' -f1)" = "$first_hash" ]
@@ -203,10 +203,10 @@ TOML
 @test "status shows npm on and marks yarn v1 as sharing the file" {
   write_npmrc_plain
 
-  run_proxy on npm
+  run_proxysw on npm
   [ "$status" -eq 0 ]
 
-  run_proxy status
+  run_proxysw status
 
   [ "$status" -eq 0 ]
   assert_carrier_state npm on

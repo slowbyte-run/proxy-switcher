@@ -25,10 +25,14 @@ from proxy_common import (
     JSON_SCHEMA,
     NODE_FETCH_VALUE,
     NODE_FETCH_VAR,
+    POSIX_SHELLS,
     PROXY_VARS,
     State,
+    current_shell,
     proxy_values,
+    quote_fish_double,
 )
+from proxy_engine import UsageError
 
 DEFAULT_ENDPOINT = "http://127.0.0.1:7890"
 DEFAULT_NO_PROXY = "localhost,127.0.0.1,::1"
@@ -42,7 +46,7 @@ PROBE_TIMEOUT = 0.5
 def home_dir() -> str:
     home = os.environ.get("HOME")
     if not home:
-        raise SystemExit("proxy: HOME is not set")
+        raise SystemExit("proxysw: HOME is not set")
     return home
 
 
@@ -305,26 +309,39 @@ def collect_status(check: bool = False, endpoint: str | None = None) -> dict:
     return status
 
 
-def render_human(status: dict) -> str:
+def render_human(status: dict, short: bool = False) -> str:
     endpoint_line = f"endpoint  {status['endpoint']}"
     if "check" in status:
         endpoint_line += f"  {status['check']['state']}"
-    lines = [
-        endpoint_line,
-        f"no_proxy  {status['no_proxy']}",
-        "",
-    ]
-    headers = ["CARRIER", "STATE", "PATH", "TOOLS", "NOTE"]
-    rows = [
-        [
-            carrier["name"],
-            carrier["state"],
-            carrier["path"],
-            ", ".join(carrier["tools"]),
-            carrier["note"],
+    lines = [endpoint_line]
+    if not short:
+        lines.append(f"no_proxy  {status['no_proxy']}")
+    lines.append("")
+
+    if short:
+        # Two columns fit any terminal. `status --json` carries the rest; this
+        # view exists because the full table is 170 characters wide.
+        headers = ["CARRIER", "STATE"]
+        rows = [
+            [
+                carrier["name"],
+                carrier["state"] + (" (skipped)" if carrier["skipped"] else ""),
+            ]
+            for carrier in status["carriers"]
         ]
-        for carrier in status["carriers"]
-    ]
+    else:
+        headers = ["CARRIER", "STATE", "PATH", "TOOLS", "NOTE"]
+        rows = [
+            [
+                carrier["name"],
+                carrier["state"],
+                carrier["path"],
+                ", ".join(carrier["tools"]),
+                carrier["note"],
+            ]
+            for carrier in status["carriers"]
+        ]
+
     widths = [len(header) for header in headers]
     for row in rows:
         for index in range(len(headers) - 1):
@@ -340,11 +357,25 @@ def render_human(status: dict) -> str:
     return "\n".join(lines)
 
 
-def status_output(check: bool, as_json: bool, endpoint: str | None) -> str:
-    status = collect_status(check=check, endpoint=endpoint)
+def render_status(status: dict, as_json: bool, short: bool) -> str:
     if as_json:
         return json.dumps(status, ensure_ascii=False, indent=2)
-    return render_human(status)
+    return render_human(status, short=short)
+
+
+def status_exit_code(status: dict, require_up: bool) -> int:
+    """0 unless ``--require-up`` was asked for and the probe found the port shut.
+
+    A down endpoint is not a failure by default: `status --check` is a
+    diagnostic, and exit 0 keeps it usable in a pipeline. `--require-up` is the
+    opt-in that turns it into a gate.
+    """
+    if not require_up:
+        return 0
+    probe = status.get("check")
+    if probe is not None and probe["state"] != "up":
+        return 1
+    return 0
 
 
 def env_document(endpoint: str, no_proxy: str) -> dict:
@@ -367,7 +398,31 @@ def _shell_state() -> str:
     return carrier.read_state(carrier.resolve(context))
 
 
-def env_output(endpoint: str, no_proxy: str, as_json: bool = False) -> str:
+def resolve_shell(requested: str | None) -> str:
+    """Pick the dialect for `env`.
+
+    An explicit ``--shell`` always wins. Otherwise ``$SHELL`` decides, and a
+    shell this tool cannot render is a hard error: silently printing zsh syntax
+    for a fish user produces a file that fails to source, which is the worst
+    outcome available.
+    """
+    if requested:
+        return requested
+    detected = current_shell()
+    if detected in POSIX_SHELLS:
+        return detected
+    if not detected:
+        # An unset $SHELL is common in cron and CI; POSIX is the safe default.
+        return "bash"
+    raise UsageError(
+        f"$SHELL is {detected}, so the dialect cannot be inferred; "
+        "pass --shell bash, zsh or fish"
+    )
+
+
+def env_output(
+    endpoint: str, no_proxy: str, as_json: bool = False, shell: str = "bash"
+) -> str:
     if as_json:
         return json.dumps(
             env_document(endpoint, no_proxy), ensure_ascii=False, indent=2
@@ -375,6 +430,18 @@ def env_output(endpoint: str, no_proxy: str, as_json: bool = False) -> str:
     state = _shell_state()
     values = proxy_values(endpoint, no_proxy)
     lines = []
+    if shell == "fish":
+        if state == State.ON:
+            for name in PROXY_VARS:
+                lines.append(f"set -gx {name} {quote_fish_double(values[name])}")
+            lines.append(
+                f"set -gx {NODE_FETCH_VAR} {quote_fish_double(NODE_FETCH_VALUE)}"
+            )
+        else:
+            for name in PROXY_VARS:
+                lines.append(f"set -e {name}")
+        return "\n".join(lines)
+
     if state == State.ON:
         for name in PROXY_VARS:
             lines.append(f"export {name}={shlex.quote(values[name])}")

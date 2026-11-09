@@ -14,19 +14,20 @@ from urllib.parse import urlsplit
 import proxy_engine
 import proxy_helper
 from carriers import managed_names
-from proxy_common import VERSION, Action
+from proxy_common import SHELL_CHOICES, VERSION, Action
 from proxy_engine import Context, EngineError, UsageError
 
-USAGE = """Usage: proxy <command> [options] [carrier...]
+USAGE = """Usage: proxysw <command> [options] [carrier...]
 
 Commands:
   on [carrier...]       Turn managed carriers on (default: every managed carrier)
   off [carrier...]      Render the canonical no-proxy state
   toggle [carrier...]   Turn on unless every selected carrier is already on
   restore [carrier...]  Restore the pre-switch snapshot byte for byte
-  status [--check] [--json]
+  status [--check] [--json] [--short] [--require-up]
                         Show the state of every proxy carrier
-  env [--json]          Print export/unset statements for eval
+  env [--shell <name>] [--json]
+                        Print export/unset statements for eval
 
 Options:
   --proxy <url>         Override the configured proxy endpoint (all commands)
@@ -41,6 +42,11 @@ Options for on/off/toggle/restore:
 
 Options for status:
   --check               Probe the endpoint with a bounded local TCP connect
+  --short               Print only the carrier and its state
+  --require-up          Exit 1 when --check finds the endpoint down
+
+Options for env:
+  --shell <name>        bash, zsh or fish (default: from $SHELL)
 
 Configuration:
   $XDG_CONFIG_HOME/proxy-switcher/config.toml accepts endpoint, no_proxy
@@ -70,6 +76,17 @@ class Parsed:
     json: bool = False
     help: bool = False
     version: bool = False
+    shell: str | None = None
+    short: bool = False
+    require_up: bool = False
+
+
+def _parse_shell(value: str) -> str:
+    if value not in SHELL_CHOICES:
+        raise UsageError(
+            f"--shell must be one of {', '.join(SHELL_CHOICES)}; got {value}"
+        )
+    return value
 
 
 def _parse_proxy(value: str) -> str:
@@ -112,8 +129,22 @@ def parse(argv: list[str]) -> Parsed:
         elif argument == "--check":
             parsed.check = True
             index += 1
+        elif argument == "--short":
+            parsed.short = True
+            index += 1
+        elif argument == "--require-up":
+            parsed.require_up = True
+            index += 1
         elif argument == "--json":
             parsed.json = True
+            index += 1
+        elif argument == "--shell":
+            if index + 1 >= len(argv):
+                raise UsageError("--shell requires an argument")
+            parsed.shell = _parse_shell(argv[index + 1])
+            index += 2
+        elif argument.startswith("--shell="):
+            parsed.shell = _parse_shell(argument.split("=", 1)[1])
             index += 1
         elif argument.startswith("-"):
             raise UsageError(f"unknown argument: {argument}")
@@ -132,6 +163,13 @@ def _reject_options(parsed: Parsed, command: str) -> None:
             raise UsageError(
                 "--force, --dry-run and --verbose are only for switch commands"
             )
+        if parsed.shell:
+            raise UsageError("--shell is only for env")
+        if parsed.short and parsed.json:
+            raise UsageError(
+                "--short and --json are mutually exclusive; "
+                "--json already carries every column"
+            )
         if parsed.carriers:
             raise UsageError(f"unknown argument: {parsed.carriers[0]}")
         return
@@ -140,13 +178,15 @@ def _reject_options(parsed: Parsed, command: str) -> None:
             raise UsageError(
                 "--force, --dry-run and --verbose are only for switch commands"
             )
-        if parsed.check:
-            raise UsageError("--check is only for status")
+        if parsed.check or parsed.short or parsed.require_up:
+            raise UsageError("--check, --short and --require-up are only for status")
         if parsed.carriers:
             raise UsageError(f"unknown argument: {parsed.carriers[0]}")
         return
-    if parsed.check:
-        raise UsageError("--check is only for status")
+    if parsed.check or parsed.short or parsed.require_up:
+        raise UsageError("--check, --short and --require-up are only for status")
+    if parsed.shell:
+        raise UsageError("--shell is only for env")
     if parsed.json and not parsed.dry_run:
         raise UsageError("--json is only for status, env and --dry-run")
 
@@ -196,25 +236,32 @@ def main(argv: list[str]) -> int:
             parsed.command not in SWITCH_COMMANDS
             and parsed.command not in READ_COMMANDS
         ):
-            print(f"proxy: unknown command: {parsed.command}", file=sys.stderr)
+            print(f"proxysw: unknown command: {parsed.command}", file=sys.stderr)
             sys.stderr.write(USAGE)
             return 2
 
         _reject_options(parsed, parsed.command)
 
         if parsed.command == "status":
-            print(
-                proxy_helper.status_output(
-                    check=parsed.check,
-                    as_json=parsed.json,
-                    endpoint=parsed.proxy,
-                )
+            # --require-up without --check would be a silent no-op, so it
+            # implies the probe rather than asking for both flags.
+            require_up = parsed.require_up
+            status = proxy_helper.collect_status(
+                check=parsed.check or require_up, endpoint=parsed.proxy
             )
-            return 0
+            print(proxy_helper.render_status(status, parsed.json, parsed.short))
+            return proxy_helper.status_exit_code(status, require_up)
 
         if parsed.command == "env":
             endpoint, no_proxy, _ = _settings_endpoint(parsed.proxy)
-            print(proxy_helper.env_output(endpoint, no_proxy, as_json=parsed.json))
+            # JSON output is data, not shell code, so it needs no dialect. It
+            # must also work when $SHELL is one `env` cannot render.
+            shell = "bash" if parsed.json else proxy_helper.resolve_shell(parsed.shell)
+            print(
+                proxy_helper.env_output(
+                    endpoint, no_proxy, as_json=parsed.json, shell=shell
+                )
+            )
             return 0
 
         context, _, _ = _build_context(
@@ -225,15 +272,15 @@ def main(argv: list[str]) -> int:
         names = parsed.carriers or managed_names()
         return proxy_engine.switch(context, action, names, explicit=explicit)
     except proxy_helper.ConfigError as error:
-        print(f"proxy: {error}", file=sys.stderr)
+        print(f"proxysw: {error}", file=sys.stderr)
         return 1
     except UsageError as error:
         if str(error):
-            print(f"proxy: {error}", file=sys.stderr)
+            print(f"proxysw: {error}", file=sys.stderr)
         sys.stderr.write(USAGE)
         return 2
     except EngineError as error:
-        print(f"proxy: {error}", file=sys.stderr)
+        print(f"proxysw: {error}", file=sys.stderr)
         return 1
 
 

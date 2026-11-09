@@ -1,5 +1,5 @@
 # Tool configuration only: proxy-switcher is not a Python package and has no
-# build step. Python 3.11+ runs `bin/proxy` straight from the checkout.
+# build step. Python 3.11+ runs `bin/proxysw` straight from the checkout.
 
 [tool.ruff]
 line-length = 88

@@ -28,7 +28,7 @@ jobs:
           args: format --check
 
       - name: shellcheck
-        run: shellcheck -x bin/proxy tests/helpers/fixture.bash
+        run: shellcheck -x bin/proxysw tests/helpers/fixture.bash
 
       - name: bats
         run: bats tests/

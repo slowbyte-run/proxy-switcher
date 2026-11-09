@@ -16,29 +16,29 @@ Single-context: root `GLOSSARY.md` plus `docs/adr/`. See `docs/agents/domain.md`
 
 ## What this repo is
 
-`bin/proxy` switches HTTP/HTTPS proxy settings for five "carriers" in a niri session: the niri `environment {}` block, a shell rc snippet, `~/.npmrc`, pnpm's `config.yaml`, and the `github.com` block in `~/.ssh/config`. docker is shown read-only.
+`bin/proxysw` switches HTTP/HTTPS proxy settings for five "carriers" in a niri session: the niri `environment {}` block, a shell rc snippet, `~/.npmrc`, pnpm's `config.yaml`, and the `github.com` block in `~/.ssh/config`. docker is shown read-only.
 
 No build, no package manager. Python 3.11+ (uses `tomllib`); PyYAML is a test dependency for the pnpm assertions. The gate is `bats tests/` plus `ruff` and `shellcheck`; `.pre-commit-config.yaml` and `.github/workflows/test.yml` both run all three.
 
 ## Commands
 
-- `./bin/proxy status` — read-only, safe to run on the real machine
-- `./bin/proxy on|off|toggle|restore|env [carrier...]`
+- `./bin/proxysw status` — read-only, safe to run on the real machine
+- `./bin/proxysw on|off|toggle|restore|env [carrier...]`
 - `bats tests/` — full suite, the main gate (`bats --jobs 4` locally when `flock` exists; CI and pre-commit use plain `bats`)
 - `bats tests/niri.bats` — one carrier; `bats --filter 'pattern' tests/` — one test
 - `uvx ruff check libexec && uvx ruff format --check libexec` — style gate
-- `shellcheck -x bin/proxy tests/helpers/fixture.bash` — shell gate
+- `shellcheck -x bin/proxysw tests/helpers/fixture.bash` — shell gate
 
-`on`/`off`/`restore` write real files. Use `--dry-run` before touching the live config; add `--json` for a machine-readable plan.
+`on`/`off`/`restore` write real files. Use `--dry-run` before touching the live config; add `--json` for a machine-readable plan.## Architecture
 
-## Architecture
-
-- `bin/proxy` is a thin bash launcher: it resolves its own symlinks, then `exec`s `libexec/proxy_cli.py`. The Python file owns usage text and argument parsing. `tests/contract.bats` fails if the launcher grows a parser or the argument count bound.
+- `bin/proxysw` is a thin bash launcher: it resolves its own symlinks, then `exec`s `libexec/proxy_cli.py`. The Python file owns usage text and argument parsing. `tests/contract.bats` fails if the launcher grows a parser or the argument count bound.
 - `libexec/` is implicitly on `sys.path` (script directory), so modules use flat imports (`import proxy_engine`, `from carriers import ...`); carrier modules use relative imports (`from .model import Carrier`). Keep `libexec` out of package form and skip path hacks.
 - `proxy_engine.py` owns snapshots, conflict detection, atomic writes and the manifest. Carriers resolve a path, render bytes, and may declare `check_rendered` (a warning about the world outside the file, e.g. ssh's `ncat`).
 - Adding a carrier: create `libexec/carriers/<name>.py` exporting `CARRIER = Carrier(...)`, then append the module name to `MODULES` in `carriers/__init__.py`. `tests/contract.bats` checks the registry and the directory agree in both directions.
 - Config: `$XDG_CONFIG_HOME/proxy-switcher/config.toml` with `endpoint`, `no_proxy`, `exclude`. State: `$XDG_STATE_HOME/proxy-switcher/manifest.json`.
 - Every `--json` document carries `schema` (`proxy_common.JSON_SCHEMA`); bump it when a field is added, removed or renamed. Status-bar widgets and TUI wrappers depend on it.
+- A switch is one locked transaction: `proxy_engine.state_lock` takes a global `flock` *before* `load_manifest` and holds it through `save_manifest`. The lock file lives in `$XDG_RUNTIME_DIR` (temp-dir fallback), never in the state directory — `--dry-run` and a no-op `restore` must leave that directory untouched. See ADR 0007.
+- `env` renders three dialects: bash/zsh share POSIX `export`/`unset`, fish needs `set -gx`/`set -e`. An unsupported `$SHELL` is a usage error rather than a silent zsh guess. fish is not a managed carrier. See ADR 0006.
 
 ## Semantics that are easy to break
 
@@ -56,7 +56,7 @@ No build, no package manager. Python 3.11+ (uses `tomllib`); PyYAML is a test de
 
 - Every bats test must call `fixture_init`. It points `HOME`, `XDG_CONFIG_HOME` and `XDG_STATE_HOME` at `$BATS_TEST_TMPDIR` and puts a stub `niri` first on `PATH`.
 - Tests stay offline, avoid sudo, and touch only the fixture tree.
-- Use the fixture's `run_proxy` helper; shared helpers live in `tests/helpers/fixture.bash`.
+- Use the fixture's `run_proxysw` helper; shared helpers live in `tests/helpers/fixture.bash`.
 - Add per-carrier tests in `tests/<carrier>.bats` and cross-carrier behaviour in `tests/aggregate.bats`. Launch/install behaviour goes in `tests/launcher.bats`; architecture rules go in `tests/contract.bats`.
 
 ## Conventions

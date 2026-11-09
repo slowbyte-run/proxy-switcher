@@ -8,6 +8,6 @@ Node 24+ 的内置 `fetch` 默认不读 `http_proxy` / `https_proxy`，需要 `N
 
 ## Consequences
 
-- `proxy env` 在 shell 载体为 `on` 时输出七行（六个变量加该开关），`off` 时仍只输出六行 `unset`。
+- `proxysw env` 在 shell 载体为 `on` 时输出七行（六个变量加该开关），`off` 时仍只输出六行 `unset`。
 - 载体状态判定只看四个 URL 变量；这个开关不会让某个载体显示为 `on`。
 - 从 niri 直接 spawn 的 Node/Electron 应用现在也能读环境变量，这是之前唯一的覆盖空洞。

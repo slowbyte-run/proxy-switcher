@@ -7,6 +7,7 @@ Carriers import these instead of keeping private copies.
 
 from __future__ import annotations
 
+import os
 from enum import Enum
 
 PROXY_VARS = (
@@ -32,7 +33,7 @@ NODE_FETCH_VALUE = "1"
 # and status-bar widgets compare this before trusting the rest of the document.
 JSON_SCHEMA = 1
 
-# Printed by `proxy --version`; keep in step with the README badge.
+# Printed by `proxysw --version`; keep in step with the README badge.
 VERSION = "0.1.0"
 
 
@@ -90,3 +91,31 @@ def escape_shell_double(value: str) -> str:
 
 def quote_shell_double(value: str) -> str:
     return f'"{escape_shell_double(value)}"'
+
+
+def escape_fish_double(value: str) -> str:
+    """Escape a value so it can live inside a double-quoted fish string.
+
+    fish needs one escape fewer than POSIX shells: a backtick is a literal
+    character there, not command substitution.
+    """
+    return value.replace("\\", "\\\\").replace('"', '\\"').replace("$", "\\$")
+
+
+def quote_fish_double(value: str) -> str:
+    return f'"{escape_fish_double(value)}"'
+
+
+# The shells `env` can render. Everything POSIX-compatible shares one dialect;
+# fish is the only one whose syntax differs.
+POSIX_SHELLS = ("bash", "zsh", "dash", "ksh", "sh", "ash")
+
+# What `--shell` accepts. The POSIX family collapses to `bash` because the
+# rendered lines are identical; asking users to remember which of six names
+# they run buys nothing.
+SHELL_CHOICES = ("bash", "zsh", "fish")
+
+
+def current_shell() -> str:
+    """The login shell's basename, lowercased; "" when ``$SHELL`` is unset."""
+    return os.path.basename(os.environ.get("SHELL", "")).lower()

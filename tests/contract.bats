@@ -48,9 +48,9 @@ carrier_modules() {
 
 @test "the bash launcher parses no arguments" {
   # Argument parsing and usage text live in proxy_cli.py alone. A `case` on $1,
-  # getopts, or a shift in bin/proxy means a second parser has appeared.
+  # getopts, or a shift in bin/proxysw means a second parser has appeared.
   run grep -nE '(^|[^[:alnum:]_])(getopts|shift)|\bcase[[:space:]]+"?\$' \
-    "$REPO_ROOT/bin/proxy"
+    "$REPO_ROOT/bin/proxysw"
   [ "$status" -ne 0 ]
 }
 
@@ -58,9 +58,9 @@ carrier_modules() {
   # Updated together with the symlink-resolving preamble; the point of the
   # bound is that the launcher never grows logic of its own.
   local lines
-  lines="$(grep -cvE '^[[:space:]]*(#|$)' "$REPO_ROOT/bin/proxy")"
+  lines="$(grep -cvE '^[[:space:]]*(#|$)' "$REPO_ROOT/bin/proxysw")"
   [ "$lines" -le 20 ]
-  grep -qE '^exec .*proxy_cli\.py' "$REPO_ROOT/bin/proxy"
+  grep -qE '^exec .*proxy_cli\.py' "$REPO_ROOT/bin/proxysw"
 }
 
 @test "every carrier module is registered and every registration exists" {
@@ -113,16 +113,16 @@ carrier_modules() {
 }
 
 @test "the CLI keeps exit codes 0, 1 and 2 as documented" {
-  run_proxy --help
+  run_proxysw --help
   [ "$status" -eq 0 ]
   [[ "$output" == *"0 success, 1 conflict/failure, 2 usage error"* ]]
 
-  run_proxy --nope
+  run_proxysw --nope
   [ "$status" -eq 2 ]
 
   write_proxy_config <<'TOML'
 endpoint = "socks5://127.0.0.1:7890"
 TOML
-  run_proxy status
+  run_proxysw status
   [ "$status" -eq 1 ]
 }

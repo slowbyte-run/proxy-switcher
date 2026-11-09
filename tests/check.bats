@@ -1,6 +1,6 @@
 #!/usr/bin/env bats
 #
-# Black-box tests for `proxy status --check`. The only seam is the CLI.
+# Black-box tests for `proxysw status --check`. The only seam is the CLI.
 #
 # The "up" case is proven with a real loopback TCP listener that records any
 # bytes it receives: a pure connect probe must leave that record empty, which
@@ -90,7 +90,7 @@ endpoint_line() {
 endpoint = "http://127.0.0.1:$(cat "$PROBE_PORT_FILE")"
 TOML
 
-  run_proxy status --check
+  run_proxysw status --check
 
   [ "$status" -eq 0 ]
   [[ "$(endpoint_line)" =~ ^endpoint[[:space:]]+.*[[:space:]]up$ ]]
@@ -102,7 +102,7 @@ TOML
 endpoint = "http://127.0.0.1:$(cat "$PROBE_PORT_FILE")"
 TOML
 
-  run_proxy status --check
+  run_proxysw status --check
   [ "$status" -eq 0 ]
 
   local attempt
@@ -122,7 +122,7 @@ TOML
 endpoint = "http://127.0.0.1:$(free_port)"
 TOML
 
-  run_proxy status --check
+  run_proxysw status --check
 
   [ "$status" -eq 0 ]
   [[ "$(endpoint_line)" =~ ^endpoint[[:space:]]+.*[[:space:]]down$ ]]
@@ -133,7 +133,7 @@ TOML
 endpoint = "http://127.0.0.1:$(free_port)"
 TOML
 
-  run_proxy status --check --json
+  run_proxysw status --check --json
 
   [ "$status" -eq 0 ]
   printf '%s\n' "$output" | jq -e . >/dev/null
@@ -149,7 +149,7 @@ TOML
 endpoint = "http://127.0.0.1:${port}"
 TOML
 
-  run_proxy status --check --json
+  run_proxysw status --check --json
 
   [ "$status" -eq 0 ]
   [ "$(printf '%s\n' "$output" | jq -r '.check.state')" = "up" ]
@@ -165,7 +165,7 @@ TOML
 endpoint = "http://127.0.0.1:9"
 TOML
 
-  run_proxy --proxy "http://127.0.0.1:${port}" status --check --json
+  run_proxysw --proxy "http://127.0.0.1:${port}" status --check --json
 
   [ "$status" -eq 0 ]
   [ "$(printf '%s\n' "$output" | jq -r '.check.state')" = "up" ]
@@ -178,7 +178,7 @@ TOML
 endpoint = "http://127.0.0.1:$(cat "$PROBE_PORT_FILE")"
 TOML
 
-  run_proxy status --json
+  run_proxysw status --json
 
   [ "$status" -eq 0 ]
   [ "$(printf '%s\n' "$output" | jq -r 'has("check")')" = "false" ]
@@ -193,7 +193,7 @@ TOML
 
   local started finished elapsed_ms
   started="$(date +%s%N)"
-  run_proxy status --check
+  run_proxysw status --check
   finished="$(date +%s%N)"
 
   [ "$status" -eq 0 ]
@@ -210,7 +210,7 @@ TOML
 endpoint = "http://localhost:${port}"
 TOML
 
-  run_proxy status --check
+  run_proxysw status --check
 
   [ "$status" -eq 0 ]
   [[ "$(endpoint_line)" =~ ^endpoint[[:space:]]+.*[[:space:]]up$ ]]
@@ -227,7 +227,7 @@ TOML
 
   local started finished elapsed_ms
   started="$(date +%s%N)"
-  run_proxy status --check
+  run_proxysw status --check
   finished="$(date +%s%N)"
 
   [ "$status" -eq 0 ]
@@ -241,10 +241,65 @@ TOML
   local before after
   before="$(snapshot_tree "$HOME" "$XDG_CONFIG_HOME" "$XDG_STATE_HOME" "$REPO_ROOT")"
 
-  run_proxy status --check
+  run_proxysw status --check
 
   [ "$status" -eq 0 ]
   after="$(snapshot_tree "$HOME" "$XDG_CONFIG_HOME" "$XDG_STATE_HOME" "$REPO_ROOT")"
   [ "$before" = "$after" ]
   [ ! -e "$NIRI_STUB_LOG" ]
+}
+
+@test "--require-up exits 1 when the endpoint is down" {
+  write_proxy_config <<TOML
+endpoint = "http://127.0.0.1:$(free_port)"
+TOML
+
+  run_proxysw status --require-up
+
+  [ "$status" -eq 1 ]
+  [[ "$(endpoint_line)" =~ ^endpoint[[:space:]]+.*[[:space:]]down$ ]]
+}
+
+@test "--require-up exits 0 when the endpoint is up" {
+  start_probe_server
+  write_proxy_config <<TOML
+endpoint = "http://127.0.0.1:$(cat "$PROBE_PORT_FILE")"
+TOML
+
+  run_proxysw status --require-up
+
+  [ "$status" -eq 0 ]
+  [[ "$(endpoint_line)" =~ ^endpoint[[:space:]]+.*[[:space:]]up$ ]]
+}
+
+@test "--require-up implies the probe instead of needing --check" {
+  start_probe_server
+  write_proxy_config <<TOML
+endpoint = "http://127.0.0.1:$(cat "$PROBE_PORT_FILE")"
+TOML
+
+  run_proxysw status --require-up --json
+
+  [ "$status" -eq 0 ]
+  [ "$(printf '%s\n' "$output" | jq -r '.check.state')" = "up" ]
+}
+
+@test "--require-up without --check still probes exactly once" {
+  start_probe_server
+  write_proxy_config <<TOML
+endpoint = "http://127.0.0.1:$(cat "$PROBE_PORT_FILE")"
+TOML
+
+  run_proxysw status --require-up
+
+  [ "$status" -eq 0 ]
+  [ "$(printf '%s\n' "$output" | grep -c '^endpoint')" -eq 1 ]
+}
+
+@test "--require-up is rejected for switch commands and env" {
+  run_proxysw on --require-up
+  [ "$status" -eq 2 ]
+
+  run_proxysw env --require-up
+  [ "$status" -eq 2 ]
 }

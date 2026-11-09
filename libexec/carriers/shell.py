@@ -8,7 +8,9 @@ variable would let that block's value leak through.
 
 The rc file follows ``$SHELL``: zsh uses ``~/.zshrc``, bash uses
 ``~/.bashrc``, and anything else (or an unset ``SHELL``) falls back to
-``~/.zshrc``.
+``~/.zshrc``. fish is deliberately not a managed carrier -- see ADR 0006; its
+``config.fish`` has no "runs last" guarantee, so ``env --shell fish`` is the
+supported way to load the values there.
 """
 
 from __future__ import annotations
@@ -21,6 +23,7 @@ from proxy_common import (
     NODE_FETCH_VAR,
     PROXY_URL_VARS,
     PROXY_VARS,
+    current_shell,
     proxy_values,
     quote_shell_double,
     unquote,
@@ -42,8 +45,7 @@ _UNSET = re.compile(r"unset\s+(.+)$")
 
 
 def rc_path(context) -> str:
-    shell = os.path.basename(os.environ.get("SHELL", "")).lower()
-    filename = ".bashrc" if shell == "bash" else ".zshrc"
+    filename = ".bashrc" if current_shell() == "bash" else ".zshrc"
     return os.path.join(context.home, filename)
 
 
