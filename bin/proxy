@@ -1,0 +1,18 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+# Follow symlinks before locating the engine: a link in ~/.local/bin must still
+# find ../libexec next to the checkout, not next to the link. The loop also
+# handles a chained link and a relative link target.
+source_path="${BASH_SOURCE[0]}"
+while [ -L "$source_path" ]; do
+  link_dir="$(cd -- "$(dirname -- "$source_path")" && pwd -P)"
+  target="$(readlink -- "$source_path")"
+  if [[ "$target" != /* ]]; then
+    target="$link_dir/$target"
+  fi
+  source_path="$target"
+done
+script_dir="$(cd -- "$(dirname -- "$source_path")" && pwd -P)"
+
+exec python3 -B "$script_dir/../libexec/proxy_cli.py" "$@"

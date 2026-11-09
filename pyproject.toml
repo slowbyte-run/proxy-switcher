@@ -1,0 +1,18 @@
+# Tool configuration only: proxy-switcher is not a Python package and has no
+# build step. Python 3.11+ runs `bin/proxy` straight from the checkout.
+
+[tool.ruff]
+line-length = 88
+target-version = "py311"
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "UP", "B", "SIM"]
+ignore = [
+    # Action and State are `str` + `Enum` on purpose: they are compared against
+    # plain strings and stored in the manifest as `.value`. StrEnum changes
+    # their `str()` and `format()` behaviour, so the rewrite is not free.
+    "UP042",
+    # `try/except/pass` reads better than contextlib.suppress where the
+    # suppressed error is part of the algorithm (best-effort fsync/unlink).
+    "SIM105",
+]
