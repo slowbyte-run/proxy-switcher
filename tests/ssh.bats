@@ -350,6 +350,14 @@ TOML
 
 @test "status stays quiet when the ProxyCommand binary exists" {
   write_ssh_on
+  # Provide a stub ncat rather than relying on the host having nmap installed:
+  # the point is that the check passes when the binary resolves, not that this
+  # machine happens to ship it (CI does not).
+  cat > "$FIXTURE_ROOT/bin/ncat" <<'STUB'
+#!/usr/bin/env bash
+exit 0
+STUB
+  chmod +x "$FIXTURE_ROOT/bin/ncat"
 
   run_proxysw status
 
