@@ -18,6 +18,7 @@ setup() {
   [[ "$output" == *"http://127.0.0.1:7890"* ]]
   assert_carrier_state niri on
   assert_carrier_tools niri "niri-spawned processes"
+  assert_carrier_tools niri "non-interactive git/curl"
   assert_carrier_state shell off
   assert_carrier_state npm off
   assert_carrier_state pnpm off
@@ -60,6 +61,7 @@ setup() {
   [ "$status" -eq 0 ]
   assert_carrier_state shell on
   assert_carrier_tools shell "interactive shells"
+  assert_carrier_tools shell "git"
 }
 
 @test "status reports shell off for explicit unsets and ignores NODE_USE_ENV_PROXY" {
@@ -343,4 +345,37 @@ TOML
   [ "$status" -eq 0 ]
   [[ "$output" == *"Usage"* ]]
   [[ "$output" == *"status"* ]]
+}
+
+@test "status --json carries a schema version" {
+  run_proxy status --json
+
+  [ "$status" -eq 0 ]
+  [ "$(printf '%s\n' "$output" | jq -r .schema)" = "1" ]
+}
+
+@test "--version prints the version and exits 0 without touching a carrier" {
+  local before after
+  before="$(snapshot_tree "$HOME" "$XDG_CONFIG_HOME" "$XDG_STATE_HOME")"
+
+  run_proxy --version
+
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"proxy-switcher"* ]]
+  [[ "$output" =~ [0-9]+\.[0-9]+\.[0-9]+ ]]
+  after="$(snapshot_tree "$HOME" "$XDG_CONFIG_HOME" "$XDG_STATE_HOME")"
+  [ "$before" = "$after" ]
+
+  run_proxy -V
+  [ "$status" -eq 0 ]
+}
+
+@test "the version matches the README badge" {
+  local badge
+  badge="$(grep -oE 'version-[0-9]+\.[0-9]+\.[0-9]+' "$REPO_ROOT/README.md" | head -n1)"
+
+  run_proxy --version
+
+  [ "$status" -eq 0 ]
+  [ "version-${output##* }" = "$badge" ]
 }

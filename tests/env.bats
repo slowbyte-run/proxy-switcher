@@ -10,16 +10,17 @@ setup() {
   fixture_init
 }
 
-@test "env prints six exports when the shell carrier is on" {
+@test "env prints six exports plus the node fetch flag when the shell carrier is on" {
   write_shell_on
 
   run_proxy env
 
   [ "$status" -eq 0 ]
-  [ "$(printf '%s\n' "$output" | wc -l)" -eq 6 ]
+  [ "$(printf '%s\n' "$output" | wc -l)" -eq 7 ]
   for key in $(proxy_keys); do
     printf '%s\n' "$output" | grep -qE "^export ${key}="
   done
+  printf '%s\n' "$output" | grep -qx 'export NODE_USE_ENV_PROXY=1'
   [[ "$output" != *$'\033'* ]]
   [[ "$output" != *"CARRIER"* ]]
 }
@@ -37,6 +38,7 @@ setup() {
   [ "$HTTPS_PROXY" = "http://127.0.0.1:7890" ]
   [ "$no_proxy" = "localhost,127.0.0.1,::1" ]
   [ "$NO_PROXY" = "localhost,127.0.0.1,::1" ]
+  [ "$NODE_USE_ENV_PROXY" = "1" ]
 }
 
 @test "env prints six unsets when the shell carrier is off" {
@@ -49,6 +51,7 @@ setup() {
   for key in $(proxy_keys); do
     printf '%s\n' "$output" | grep -qx "unset ${key}"
   done
+  ! printf '%s\n' "$output" | grep -q 'NODE_USE_ENV_PROXY'
   [[ "$output" != *$'\033'* ]]
 
   export http_proxy="http://stale.invalid:1"
@@ -140,4 +143,42 @@ SH
 
   run_proxy env unexpected
   [ "$status" -eq 2 ]
+}
+
+@test "env --json lists the exports when the shell carrier is on" {
+  write_shell_on
+
+  run_proxy env --json
+
+  [ "$status" -eq 0 ]
+  printf '%s\n' "$output" | jq -e . >/dev/null
+  [ "$(printf '%s\n' "$output" | jq -r .schema)" = "1" ]
+  [ "$(printf '%s\n' "$output" | jq -r .state)" = "on" ]
+  [ "$(printf '%s\n' "$output" | jq -r '.exports.http_proxy')" = "http://127.0.0.1:7890" ]
+  [ "$(printf '%s\n' "$output" | jq -r '.exports.NODE_USE_ENV_PROXY')" = "1" ]
+  [ "$(printf '%s\n' "$output" | jq -r '.unsets | length')" -eq 0 ]
+}
+
+@test "env --json lists the unset variables when the shell carrier is off" {
+  write_shell_off
+
+  run_proxy env --json
+
+  [ "$status" -eq 0 ]
+  [ "$(printf '%s\n' "$output" | jq -r .state)" = "off" ]
+  [ "$(printf '%s\n' "$output" | jq -r '.exports | length')" -eq 0 ]
+  [ "$(printf '%s\n' "$output" | jq -r '.unsets | join(",")')" = "http_proxy,https_proxy,HTTP_PROXY,HTTPS_PROXY,no_proxy,NO_PROXY" ]
+}
+
+@test "env --json performs no writes" {
+  write_all_carriers_on
+  local before after
+  before="$(snapshot_tree "$HOME" "$XDG_CONFIG_HOME" "$XDG_STATE_HOME")"
+
+  run_proxy env --json
+
+  [ "$status" -eq 0 ]
+  after="$(snapshot_tree "$HOME" "$XDG_CONFIG_HOME" "$XDG_STATE_HOME")"
+  [ "$before" = "$after" ]
+  [ ! -e "$NIRI_STUB_LOG" ]
 }

@@ -72,6 +72,7 @@ SH
   for key in $(proxy_keys); do
     grep -qE "^export ${key}=\"" "$(shell_rc_path)"
   done
+  grep -qx 'export NODE_USE_ENV_PROXY=1' "$(shell_rc_path)"
 }
 
 @test "off writes six explicit unsets and keeps the snippet" {
@@ -88,6 +89,7 @@ SH
   ! grep -q 'http://127.0.0.1:7890' "$(shell_rc_path)"
   ! grep -qE '^export (http_proxy|https_proxy|HTTP_PROXY|HTTPS_PROXY|no_proxy|NO_PROXY)=' \
     "$(shell_rc_path)"
+  ! grep -qE '^unset NODE_USE_ENV_PROXY$' "$(shell_rc_path)"
 
   run_proxy status
   [ "$status" -eq 0 ]
