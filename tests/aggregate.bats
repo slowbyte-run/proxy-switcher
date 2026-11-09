@@ -503,3 +503,114 @@ TOML
   [ "$status" -eq 1 ]
   [[ "$output" == *"exclude"* ]]
 }
+
+@test "a manifest from a newer proxy-switcher is refused with exit code 1" {
+  write_niri_plain
+  mkdir -p "$(proxy_state_root)"
+  printf '{"version": 99, "carriers": {}}\n' > "$(proxy_manifest_path)"
+  local before
+  before="$(sha256sum "$(niri_config_path)" | cut -d' ' -f1)"
+
+  run_proxy on niri
+
+  [ "$status" -eq 1 ]
+  [[ "$output" == *"newer"* ]]
+  [[ "$output" == *"upgrade"* ]]
+  [ "$(sha256sum "$(niri_config_path)" | cut -d' ' -f1)" = "$before" ]
+}
+
+@test "a manifest with a non-integer version is refused with exit code 1" {
+  write_niri_plain
+  mkdir -p "$(proxy_state_root)"
+  printf '{"version": "1", "carriers": {}}\n' > "$(proxy_manifest_path)"
+
+  run_proxy on niri
+
+  [ "$status" -eq 1 ]
+  [[ "$output" == *"invalid version"* ]]
+}
+
+@test "a manifest without a version is read as the current version" {
+  write_niri_plain
+  mkdir -p "$(proxy_state_root)"
+  printf '{"carriers": {}}\n' > "$(proxy_manifest_path)"
+
+  run_proxy on niri
+
+  [ "$status" -eq 0 ]
+  [ "$(jq -r '.version' "$(proxy_manifest_path)")" = "1" ]
+}
+
+@test "--dry-run --json emits a machine-readable plan and writes nothing" {
+  write_all_carriers_off
+  local before after
+  before="$(snapshot_tree "$HOME" "$XDG_CONFIG_HOME" "$XDG_STATE_HOME")"
+
+  run_proxy on --dry-run --json
+
+  [ "$status" -eq 0 ]
+  printf '%s\n' "$output" | jq -e . >/dev/null
+  [ "$(printf '%s\n' "$output" | jq -r .dry_run)" = "true" ]
+  [ "$(printf '%s\n' "$output" | jq -r .action)" = "on" ]
+  [ "$(printf '%s\n' "$output" | jq -r '.carriers | length')" -eq 5 ]
+  for carrier in $(managed_carriers); do
+    [ "$(printf '%s\n' "$output" | jq -r --arg name "$carrier" \
+      '.carriers[] | select(.name == $name) | .changed')" = "true" ]
+  done
+  after="$(snapshot_tree "$HOME" "$XDG_CONFIG_HOME" "$XDG_STATE_HOME")"
+  [ "$before" = "$after" ]
+  [ ! -e "$NIRI_STUB_LOG" ]
+}
+
+@test "--dry-run --json reports already-on carriers as unchanged" {
+  write_all_carriers_on
+
+  run_proxy on --dry-run --json
+
+  [ "$status" -eq 0 ]
+  [ "$(printf '%s\n' "$output" | jq -r '[.carriers[] | select(.changed)] | length')" -eq 0 ]
+}
+
+@test "--dry-run --json reports a conflict and exits 1" {
+  write_all_carriers_off
+  run_proxy on niri
+  [ "$status" -eq 0 ]
+  printf '\n// edited by hand\n' >> "$(niri_config_path)"
+
+  run_proxy off --dry-run --json
+
+  [ "$status" -eq 1 ]
+  printf '%s\n' "$output" | jq -e . >/dev/null
+  [ "$(printf '%s\n' "$output" | jq -r '.conflicts[0].carrier')" = "niri" ]
+}
+
+@test "--dry-run --json lists excluded carriers under skipped" {
+  write_all_carriers_off
+  write_proxy_config <<'TOML'
+exclude = ["ssh"]
+TOML
+
+  run_proxy on --dry-run --json
+
+  [ "$status" -eq 0 ]
+  [ "$(printf '%s\n' "$output" | jq -r '.skipped | join(",")')" = "ssh" ]
+  [ "$(printf '%s\n' "$output" | jq -r '[.carriers[] | select(.name == "ssh")] | length')" -eq 0 ]
+}
+
+@test "--json without --dry-run is a usage error for switch commands" {
+  run_proxy on --json
+  [ "$status" -eq 2 ]
+  [[ "$output" == *"--dry-run"* ]]
+
+  run_proxy restore --json
+  [ "$status" -eq 2 ]
+}
+
+@test "the plan document carries a schema version" {
+  write_all_carriers_off
+
+  run_proxy on --dry-run --json
+
+  [ "$status" -eq 0 ]
+  [ "$(printf '%s\n' "$output" | jq -r .schema)" = "1" ]
+}

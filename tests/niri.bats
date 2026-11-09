@@ -28,6 +28,7 @@ setup() {
   grep -qF 'QT_QPA_PLATFORM "wayland"' "$(niri_config_path)"
   grep -qF 'GODEBUG "http2client=0"' "$(niri_config_path)"
   grep -qF '// keep this comment' "$(niri_config_path)"
+  grep -qE '^[[:space:]]+NODE_USE_ENV_PROXY "1"' "$(niri_config_path)"
   ! grep -q 'all_proxy' "$(niri_config_path)"
 
   [ "$(grep -cE "^[[:space:]]+(http_proxy|https_proxy|HTTP_PROXY|HTTPS_PROXY|no_proxy|NO_PROXY) " "$(niri_config_path)")" -eq 6 ]
@@ -46,6 +47,7 @@ setup() {
   done
   grep -qF 'LANG "zh_CN.UTF-8"' "$(niri_config_path)"
   grep -qF '// keep this comment' "$(niri_config_path)"
+  grep -qE '^[[:space:]]+NODE_USE_ENV_PROXY null$' "$(niri_config_path)"
   ! grep -q 'http://127.0.0.1:7890' "$(niri_config_path)"
 
   run_proxy status
@@ -359,4 +361,45 @@ TOML
   grep -qE '^[[:space:]]+no_proxy "localhost,127.0.0.1,::1"$' "$(niri_config_path)"
   grep -qE '^[[:space:]]+http_proxy "http://127.0.0.1:7890"$' "$(niri_config_path)"
   [ "$(grep -cE '^[[:space:]]+(http_proxy|https_proxy|HTTP_PROXY|HTTPS_PROXY|no_proxy|NO_PROXY) ' "$(niri_config_path)")" -eq 6 ]
+}
+
+@test "status surfaces a niri reload that never landed" {
+  write_niri_plain
+  cat > "$FIXTURE_ROOT/bin/niri" <<'STUB'
+#!/usr/bin/env bash
+printf '%s\n' "$*" >> "$NIRI_STUB_LOG"
+echo "no compositor" >&2
+exit 1
+STUB
+  chmod +x "$FIXTURE_ROOT/bin/niri"
+  run_proxy on niri
+  [ "$status" -eq 0 ]
+
+  run_proxy status
+
+  [ "$status" -eq 0 ]
+  assert_carrier_state niri on
+  [[ "$output" == *"not reloaded"* ]]
+}
+
+@test "status stays quiet when every write reloaded cleanly" {
+  write_niri_plain
+
+  run_proxy on niri
+  [ "$status" -eq 0 ]
+
+  run_proxy status
+
+  [ "$status" -eq 0 ]
+  [[ "$output" != *"not reloaded"* ]]
+}
+
+@test "status ignores a corrupt manifest instead of failing" {
+  mkdir -p "$(proxy_state_root)"
+  printf 'not json' > "$(proxy_manifest_path)"
+
+  run_proxy status
+
+  [ "$status" -eq 0 ]
+  assert_carrier_state docker unmanaged
 }
