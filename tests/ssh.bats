@@ -314,3 +314,45 @@ TOML
   [[ "$output" == *"would"* ]]
   [ "$(snapshot_tree "$HOME" "$XDG_STATE_HOME")" = "$before" ]
 }
+
+@test "on warns when the ProxyCommand binary is not on PATH" {
+  write_ssh_off
+  local restricted="$FIXTURE_ROOT/no-ncat-bin"
+  mkdir -p "$restricted"
+  local binary
+  for binary in bash python3 dirname readlink; do
+    ln -s "$(command -v "$binary")" "$restricted/$binary"
+  done
+
+  run env PATH="$restricted" "$PROXY_BIN" on ssh
+
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"ncat"* ]]
+  [[ "$output" == *"not on PATH"* ]]
+  grep -qF 'ProxyCommand ncat' "$(ssh_config_path)"
+}
+
+@test "status reports a missing ProxyCommand binary next to an enabled ssh carrier" {
+  write_ssh_on
+  local restricted="$FIXTURE_ROOT/no-ncat-bin"
+  mkdir -p "$restricted"
+  local binary
+  for binary in bash python3 dirname readlink; do
+    ln -s "$(command -v "$binary")" "$restricted/$binary"
+  done
+
+  run env PATH="$restricted" "$PROXY_BIN" status
+
+  [ "$status" -eq 0 ]
+  assert_carrier_state ssh on
+  [[ "$output" == *"ncat"* ]]
+}
+
+@test "status stays quiet when the ProxyCommand binary exists" {
+  write_ssh_on
+
+  run_proxy status
+
+  [ "$status" -eq 0 ]
+  [[ "$output" != *"not on PATH"* ]]
+}
