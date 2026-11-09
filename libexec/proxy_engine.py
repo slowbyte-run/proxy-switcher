@@ -21,10 +21,10 @@ import stat
 import sys
 import tempfile
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 from carriers import get as get_carrier
-from proxy_common import Action, State
+from proxy_common import JSON_SCHEMA, Action, State
 
 MANIFEST_VERSION = 1
 
@@ -48,6 +48,7 @@ class Context:
     force: bool = False
     dry_run: bool = False
     verbose: bool = False
+    json: bool = False
 
     @property
     def manifest_path(self) -> str:
@@ -69,6 +70,7 @@ class Plan:
     wanted: bytes | None
     changed: bool
     original_existed: bool
+    warning: str = ""
 
 
 def hash_bytes(data: bytes | None) -> str | None:
@@ -155,11 +157,21 @@ def load_manifest(context: Context) -> dict:
             f"manifest {context.manifest_path} is not valid JSON: {error}"
         ) from error
 
-    if not isinstance(manifest, dict) or not isinstance(
-        manifest.get("carriers"), dict
-    ):
+    if not isinstance(manifest, dict) or not isinstance(manifest.get("carriers"), dict):
         raise EngineError(f"manifest {context.manifest_path} has an unknown shape")
-    manifest.setdefault("version", MANIFEST_VERSION)
+    version = manifest.setdefault("version", MANIFEST_VERSION)
+    if not isinstance(version, int) or version < 1:
+        raise EngineError(
+            f"manifest {context.manifest_path} has an invalid version: {version!r}"
+        )
+    if version > MANIFEST_VERSION:
+        # A newer release wrote this file. Refusing beats silently dropping the
+        # fields this build does not know about when it writes the manifest back.
+        raise EngineError(
+            f"manifest {context.manifest_path} was written by a newer "
+            f"proxy-switcher (version {version}, this build understands "
+            f"{MANIFEST_VERSION}); upgrade proxy-switcher"
+        )
     return manifest
 
 
@@ -174,7 +186,7 @@ def create_snapshot(
 ) -> tuple[str, str | None]:
     snapshots_dir = os.path.join(context.state_root, "snapshots")
     os.makedirs(snapshots_dir, mode=0o700, exist_ok=True)
-    stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S%fZ")
+    stamp = datetime.now(UTC).strftime("%Y%m%dT%H%M%S%fZ")
     snapshot_dir = os.path.join(snapshots_dir, stamp)
     suffix = 1
     while os.path.exists(snapshot_dir):
@@ -187,9 +199,7 @@ def create_snapshot(
     snapshot_file = None
     if original is not None:
         snapshot_file = os.path.join(snapshot_dir, carrier.name)
-        descriptor = os.open(
-            snapshot_file, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600
-        )
+        descriptor = os.open(snapshot_file, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
         with os.fdopen(descriptor, "wb") as handle:
             handle.write(original)
             handle.flush()
@@ -199,7 +209,7 @@ def create_snapshot(
 
 
 def _timestamp() -> str:
-    return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    return datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
 def _original_region_existed(carrier, current: bytes | None) -> bool:
@@ -210,9 +220,7 @@ def _original_region_existed(carrier, current: bytes | None) -> bool:
     return carrier.region_exists(current.decode("utf-8"))
 
 
-def select_carriers(
-    context: Context, names: list[str]
-) -> tuple[list[str], list[str]]:
+def select_carriers(context: Context, names: list[str]) -> tuple[list[str], list[str]]:
     """Validate names and drop excluded carriers, preserving the given order."""
     selected: list[str] = []
     skipped: list[str] = []
@@ -294,7 +302,16 @@ def _target_bytes(
         remove_region = False
         if carrier.region_exists is not None and not carrier.region_exists(text):
             return current
-    return carrier.render_off(text, context, remove_region=remove_region).encode("utf-8")
+    return carrier.render_off(text, context, remove_region=remove_region).encode(
+        "utf-8"
+    )
+
+
+def _rendered_warning(carrier, wanted: bytes | None) -> str:
+    """Ask the carrier whether the bytes it is about to write can work."""
+    if carrier.check_rendered is None or wanted is None:
+        return ""
+    return carrier.check_rendered(wanted.decode("utf-8"))
 
 
 def build_plans(
@@ -336,6 +353,9 @@ def build_plans(
             else:
                 original_existed = _original_region_existed(carrier, current)
             wanted = _target_bytes(carrier, entry, current, context, action)
+            warning = _rendered_warning(carrier, wanted)
+            if warning and not context.json:
+                context.warn(f"{name}: {warning}")
         except UnicodeDecodeError as error:
             failures.append((name, f"{path} is not valid UTF-8: {error}"))
             continue
@@ -355,6 +375,7 @@ def build_plans(
                 wanted=wanted,
                 changed=wanted != current,
                 original_existed=original_existed,
+                warning=warning,
             )
         )
 
@@ -396,6 +417,53 @@ def _display_action(action: Action) -> str:
     return action.value
 
 
+def plan_document(
+    context: Context,
+    action: Action,
+    plans: list[Plan],
+    conflicts: list[tuple],
+    failures: list[tuple[str, str]],
+    skipped: list[str],
+    unstarted: list[str],
+) -> dict:
+    """The machine-readable form of a dry run.
+
+    Carries the same decisions the human output prints, so a TUI, an fzf
+    wrapper or a status-bar widget can preview a switch without parsing text.
+    """
+    return {
+        "schema": JSON_SCHEMA,
+        "dry_run": True,
+        "action": action.value,
+        "endpoint": context.endpoint,
+        "no_proxy": context.no_proxy,
+        "carriers": [
+            {
+                "name": plan.name,
+                "path": plan.path,
+                "state": plan.carrier.read_state(plan.path),
+                "action": action.value,
+                "changed": plan.changed,
+                "exists": plan.current is not None,
+                "warning": plan.warning,
+            }
+            for plan in plans
+        ],
+        "skipped": skipped,
+        "unstarted": unstarted,
+        "conflicts": [
+            {
+                "carrier": name,
+                "path": path,
+                "expected": expected,
+                "found": found,
+            }
+            for name, path, expected, found in conflicts
+        ],
+        "failures": [{"carrier": name, "error": message} for name, message in failures],
+    }
+
+
 def _write_mode(plan: Plan, action: Action) -> int:
     if action is Action.RESTORE:
         original = (plan.entry or {}).get("original_mode")
@@ -404,9 +472,7 @@ def _write_mode(plan: Plan, action: Action) -> int:
     return plan.mode if plan.mode is not None else plan.carrier.default_mode
 
 
-def _apply_plan(
-    context: Context, manifest: dict, action: Action, plan: Plan
-) -> bool:
+def _apply_plan(context: Context, manifest: dict, action: Action, plan: Plan) -> bool:
     """Apply one plan and update the manifest in place. Returns whether it wrote."""
     entries = manifest["carriers"]
     entry = plan.entry
@@ -449,8 +515,7 @@ def _apply_plan(
                 print(f"proxy: {plan.name}: removed {plan.path}")
             else:
                 print(
-                    f"proxy: {plan.name}: wrote {plan.path} "
-                    f"({len(plan.wanted)} bytes)"
+                    f"proxy: {plan.name}: wrote {plan.path} ({len(plan.wanted)} bytes)"
                 )
             if new_entry:
                 if snapshot_file is None:
@@ -479,9 +544,18 @@ def switch(
     context: Context, action: Action, names: list[str], explicit: bool = True
 ) -> int:
     selected, skipped = select_carriers(context, names)
-    for name in skipped:
-        print(f"{name}: skipped (excluded by configuration)")
+    if not context.json:
+        for name in skipped:
+            print(f"{name}: skipped (excluded by configuration)")
     if not selected:
+        if context.json:
+            print(
+                json.dumps(
+                    plan_document(context, action, [], [], [], skipped, []),
+                    ensure_ascii=False,
+                    indent=2,
+                )
+            )
         return 0
 
     effective = resolve_action(context, action, selected)
@@ -491,6 +565,23 @@ def switch(
     plans, conflicts, failures, unstarted = build_plans(
         context, effective, selected, entries, explicit
     )
+
+    if context.json:
+        # A JSON plan owns stdout; the caller reads conflicts and failures out
+        # of the document instead of scraping messages. Only reachable with
+        # --dry-run, enforced by the CLI.
+        print(
+            json.dumps(
+                plan_document(
+                    context, effective, plans, conflicts, failures, skipped, unstarted
+                ),
+                ensure_ascii=False,
+                indent=2,
+            )
+        )
+        blocked = bool(conflicts) and not context.force
+        return 1 if blocked or failures else 0
+
     for name in unstarted:
         print(f"{name}: nothing to restore (no snapshot)")
 
@@ -534,9 +625,7 @@ def switch(
             if plan.changed:
                 changed_names.append(plan.name)
         except Exception as error:  # noqa: BLE001 - one carrier must not abort the rest
-            failures.append(
-                (plan.name, str(error) or error.__class__.__name__)
-            )
+            failures.append((plan.name, str(error) or error.__class__.__name__))
             failed_names.append(plan.name)
             continue
 

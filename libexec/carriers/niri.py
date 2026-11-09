@@ -12,7 +12,13 @@ from kdl import (
     remove_environment_block,
     update_environment,
 )
-from proxy_common import PROXY_URL_VARS, PROXY_VARS, proxy_values
+from proxy_common import (
+    NODE_FETCH_VALUE,
+    NODE_FETCH_VAR,
+    PROXY_URL_VARS,
+    PROXY_VARS,
+    proxy_values,
+)
 
 from .model import Carrier
 
@@ -40,7 +46,11 @@ def region_exists(text: str) -> bool:
 
 
 def _values(context) -> dict[str, str | None]:
-    return proxy_values(context.endpoint, context.no_proxy)
+    values: dict[str, str | None] = dict(
+        proxy_values(context.endpoint, context.no_proxy)
+    )
+    values[NODE_FETCH_VAR] = NODE_FETCH_VALUE
+    return values
 
 
 def render_on(text: str, context) -> str:
@@ -50,7 +60,8 @@ def render_on(text: str, context) -> str:
 def render_off(text: str, context, remove_region: bool = False) -> str:
     if remove_region:
         return remove_environment_block(text)
-    return update_environment(text, {key: None for key in PROXY_VARS})
+    keys = (*PROXY_VARS, NODE_FETCH_VAR)
+    return update_environment(text, {key: None for key in keys})
 
 
 def after_write(context) -> bool:
@@ -80,8 +91,7 @@ def after_write(context) -> bool:
             context.warn(f"niri did not reload the configuration: {detail}")
         else:
             context.warn(
-                "niri did not reload the configuration "
-                f"(exit {completed.returncode})"
+                f"niri did not reload the configuration (exit {completed.returncode})"
             )
         return False
     return True
@@ -90,7 +100,7 @@ def after_write(context) -> bool:
 CARRIER = Carrier(
     name=NAME,
     managed=True,
-    tools=("niri-spawned processes", "git", "curl", "GUI apps"),
+    tools=("niri-spawned processes", "non-interactive git/curl", "GUI apps"),
     note="",
     resolve=resolve,
     read_state=read_state,

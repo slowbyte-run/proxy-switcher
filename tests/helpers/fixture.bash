@@ -1,3 +1,7 @@
+# shellcheck shell=bash
+# `output` and `status` below are set by bats, not by this file.
+# shellcheck disable=SC2154
+
 # Fixture factory shared by all bats tests.
 #
 # Every test runs inside a throwaway HOME and XDG tree rooted at
@@ -100,6 +104,7 @@ environment {
     HTTPS_PROXY "http://127.0.0.1:7890"
     no_proxy "localhost,127.0.0.1,::1"
     NO_PROXY "localhost,127.0.0.1,::1"
+    NODE_USE_ENV_PROXY "1"
 }
 
 input {
@@ -120,6 +125,7 @@ environment {
     HTTPS_PROXY null
     no_proxy null
     NO_PROXY null
+    NODE_USE_ENV_PROXY null
 }
 KDL
 }
@@ -160,6 +166,7 @@ export HTTP_PROXY="http://127.0.0.1:7890"
 export HTTPS_PROXY="http://127.0.0.1:7890"
 export no_proxy="localhost,127.0.0.1,::1"
 export NO_PROXY="localhost,127.0.0.1,::1"
+export NODE_USE_ENV_PROXY=1
 # <<< proxy-switcher <<<
 SH
 }

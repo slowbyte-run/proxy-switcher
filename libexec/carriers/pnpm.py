@@ -5,7 +5,7 @@ normalise quoting and reflow the document; pnpm users hand-edit this file, so
 the carrier only rewrites the value part of the three top-level keys and
 appends missing keys. Everything else -- comments, key order, quoting,
 indentation, nested blocks and line endings -- stays byte for byte. ``off``
-does not render at all: it restores the snapshot taken by the engine.
+removes the three keys; the snapshot is only used by ``restore``.
 """
 
 from __future__ import annotations
@@ -219,9 +219,12 @@ def _remove_keys(text: str, keys: tuple[str, ...]) -> str:
     kept: list[str] = []
     for line in text.splitlines(keepends=True):
         match = _LINE_RE.match(line.rstrip("\r\n"))
-        if match and not match.group("indent"):
-            if _unquote_key(match.group("key")) in keys:
-                continue
+        if (
+            match
+            and not match.group("indent")
+            and _unquote_key(match.group("key")) in keys
+        ):
+            continue
         kept.append(line)
     return "".join(kept)
 

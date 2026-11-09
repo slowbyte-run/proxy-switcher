@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import os
 import re
+import shutil
 from dataclasses import dataclass
 from urllib.parse import urlsplit
 
@@ -86,10 +87,9 @@ def _blocks(lines: list[_Line]) -> list[_Block]:
             if current is not None:
                 blocks.append(_Block(current.host_index, current.start, index))
             current = _Block(index, index + 1, len(lines))
-        elif keyword == "match":
-            if current is not None:
-                blocks.append(_Block(current.host_index, current.start, index))
-                current = None
+        elif keyword == "match" and current is not None:
+            blocks.append(_Block(current.host_index, current.start, index))
+            current = None
     if current is not None:
         blocks.append(current)
     return blocks
@@ -140,6 +140,31 @@ def region_exists(text: str) -> bool:
 def _proxy_command(context) -> str:
     endpoint = urlsplit(context.endpoint)
     return f"ncat --proxy {endpoint.netloc} --proxy-type http %h %p"
+
+
+def check_rendered(text: str | None) -> str:
+    """Warn when the github.com ProxyCommand names a binary that is missing.
+
+    The rendered value shells out to ``ncat`` (nmap). Without it ssh fails at
+    connect time with a confusing error, so the caller gets told up front --
+    both before ``on`` writes and from ``status``.
+    """
+    if not text:
+        return ""
+    lines = _split_lines(text)
+    block = _github_block(lines)
+    if block is None:
+        return ""
+    value = _proxy_value(lines, block)
+    if not value:
+        return ""
+    command = value.split()[0]
+    if command.lower() == PROXY_VALUE_NONE or shutil.which(command):
+        return ""
+    return (
+        f"ProxyCommand runs {command}, which is not on PATH; "
+        "install nmap-ncat or GitHub SSH will fail"
+    )
 
 
 def _render(text: str, value: str) -> str:
@@ -236,5 +261,6 @@ CARRIER = Carrier(
     render_on=render_on,
     render_off=render_off,
     region_exists=region_exists,
+    check_rendered=check_rendered,
     default_mode=0o600,
 )

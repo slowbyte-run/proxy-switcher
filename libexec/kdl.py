@@ -240,7 +240,9 @@ def update_environment(text: str, values: dict[str, str | None]) -> str:
 
     if block is None:
         lines = ["environment {"]
-        lines.extend(f"    {name} {format_value(value)}" for name, value in values.items())
+        lines.extend(
+            f"    {name} {format_value(value)}" for name, value in values.items()
+        )
         lines.append("}")
         addition = "\n".join(lines)
         if text and not text.endswith("\n"):
@@ -295,6 +297,8 @@ def update_environment(text: str, values: dict[str, str | None]) -> str:
         edits.append((closing, closing, insertion))
 
     result = text
-    for start, end, replacement in sorted(edits, key=lambda edit: (edit[0], edit[1]), reverse=True):
+    for start, end, replacement in sorted(
+        edits, key=lambda edit: (edit[0], edit[1]), reverse=True
+    ):
         result = result[:start] + replacement + result[end:]
     return result

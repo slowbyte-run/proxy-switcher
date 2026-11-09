@@ -17,6 +17,8 @@ import os
 import re
 
 from proxy_common import (
+    NODE_FETCH_VALUE,
+    NODE_FETCH_VAR,
     PROXY_URL_VARS,
     PROXY_VARS,
     proxy_values,
@@ -103,7 +105,12 @@ def _snippet(context, *, on: bool) -> str:
     if on:
         values = proxy_values(context.endpoint, context.no_proxy)
         lines.extend(f"export {key}={_quote(values[key])}" for key in PROXY_VARS)
+        lines.append(f"export {NODE_FETCH_VAR}={NODE_FETCH_VALUE}")
     else:
+        # Deliberately no ``unset NODE_USE_ENV_PROXY`` here: the flag only
+        # enables Node to read the six variables, and a user may set it
+        # themselves outside this snippet. Removing it on ``off`` would
+        # silently override that hand-written line.
         lines.extend(f"unset {key}" for key in PROXY_VARS)
     lines.append(SNIPPET_END)
     return "\n".join(lines) + "\n"
@@ -183,7 +190,7 @@ def after_write(context) -> bool:
 CARRIER = Carrier(
     name=NAME,
     managed=True,
-    tools=("interactive shells",),
+    tools=("interactive shells", "git", "curl"),
     note="takes precedence over the niri environment block",
     resolve=resolve,
     read_state=read_state,

@@ -22,6 +22,19 @@ PROXY_VARS = (
 # only describe exclusions, so they never turn a carrier "on" by themselves.
 PROXY_URL_VARS = PROXY_VARS[:4]
 
+# Node's built-in fetch ignores the environment unless this opt-in flag is set
+# (Node 24+). It is not a proxy value: it only enables reading the others, so
+# it never counts towards a carrier's state.
+NODE_FETCH_VAR = "NODE_USE_ENV_PROXY"
+NODE_FETCH_VALUE = "1"
+
+# Bumped whenever a `--json` document gains, loses or renames a field. Scripts
+# and status-bar widgets compare this before trusting the rest of the document.
+JSON_SCHEMA = 1
+
+# Printed by `proxy --version`; keep in step with the README badge.
+VERSION = "0.1.0"
+
 
 class Action(str, Enum):
     """A switch action. String values keep manifest JSON readable."""

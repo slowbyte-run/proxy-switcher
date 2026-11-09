@@ -14,7 +14,7 @@ from urllib.parse import urlsplit
 import proxy_engine
 import proxy_helper
 from carriers import managed_names
-from proxy_common import Action
+from proxy_common import VERSION, Action
 from proxy_engine import Context, EngineError, UsageError
 
 USAGE = """Usage: proxy <command> [options] [carrier...]
@@ -26,10 +26,12 @@ Commands:
   restore [carrier...]  Restore the pre-switch snapshot byte for byte
   status [--check] [--json]
                         Show the state of every proxy carrier
-  env                   Print export/unset statements for eval
+  env [--json]          Print export/unset statements for eval
 
 Options:
   --proxy <url>         Override the configured proxy endpoint (all commands)
+  --json                Machine-readable output (status, env, --dry-run)
+  -V, --version         Show the version and exit
   -h, --help            Show this help
 
 Options for on/off/toggle/restore:
@@ -39,7 +41,6 @@ Options for on/off/toggle/restore:
 
 Options for status:
   --check               Probe the endpoint with a bounded local TCP connect
-  --json                Emit machine-readable JSON
 
 Configuration:
   $XDG_CONFIG_HOME/proxy-switcher/config.toml accepts endpoint, no_proxy
@@ -68,10 +69,7 @@ class Parsed:
     check: bool = False
     json: bool = False
     help: bool = False
-
-
-class HelpRequested(Exception):
-    pass
+    version: bool = False
 
 
 def _parse_proxy(value: str) -> str:
@@ -90,6 +88,9 @@ def parse(argv: list[str]) -> Parsed:
         argument = argv[index]
         if argument in ("-h", "--help"):
             parsed.help = True
+            index += 1
+        elif argument in ("-V", "--version"):
+            parsed.version = True
             index += 1
         elif argument == "--proxy":
             if index + 1 >= len(argv):
@@ -128,20 +129,26 @@ def parse(argv: list[str]) -> Parsed:
 def _reject_options(parsed: Parsed, command: str) -> None:
     if parsed.command == "status":
         if parsed.force or parsed.dry_run or parsed.verbose:
-            raise UsageError("--force, --dry-run and --verbose are only for switch commands")
+            raise UsageError(
+                "--force, --dry-run and --verbose are only for switch commands"
+            )
         if parsed.carriers:
             raise UsageError(f"unknown argument: {parsed.carriers[0]}")
         return
     if parsed.command == "env":
         if parsed.force or parsed.dry_run or parsed.verbose:
-            raise UsageError("--force, --dry-run and --verbose are only for switch commands")
-        if parsed.check or parsed.json:
-            raise UsageError("--check and --json are only for status")
+            raise UsageError(
+                "--force, --dry-run and --verbose are only for switch commands"
+            )
+        if parsed.check:
+            raise UsageError("--check is only for status")
         if parsed.carriers:
             raise UsageError(f"unknown argument: {parsed.carriers[0]}")
         return
-    if parsed.check or parsed.json:
-        raise UsageError("--check and --json are only for status")
+    if parsed.check:
+        raise UsageError("--check is only for status")
+    if parsed.json and not parsed.dry_run:
+        raise UsageError("--json is only for status, env and --dry-run")
 
 
 def _settings_endpoint(override: str | None) -> tuple[str, str, tuple[str, ...]]:
@@ -151,7 +158,7 @@ def _settings_endpoint(override: str | None) -> tuple[str, str, tuple[str, ...]]
 
 
 def _build_context(
-    proxy: str | None, force: bool, dry_run: bool, verbose: bool
+    proxy: str | None, force: bool, dry_run: bool, verbose: bool, as_json: bool
 ) -> tuple[Context, str, str]:
     endpoint, no_proxy, excluded = _settings_endpoint(proxy)
     context = Context(
@@ -164,6 +171,7 @@ def _build_context(
         force=force,
         dry_run=dry_run,
         verbose=verbose,
+        json=as_json,
     )
     return context, endpoint, no_proxy
 
@@ -175,13 +183,19 @@ def main(argv: list[str]) -> int:
 
     try:
         parsed = parse(argv)
+        if parsed.version:
+            print(f"proxy-switcher {VERSION}")
+            return 0
         if parsed.help or parsed.command == "help":
             print(USAGE, end="")
             return 0
         if parsed.command is None:
             sys.stderr.write(USAGE)
             return 2
-        if parsed.command not in SWITCH_COMMANDS and parsed.command not in READ_COMMANDS:
+        if (
+            parsed.command not in SWITCH_COMMANDS
+            and parsed.command not in READ_COMMANDS
+        ):
             print(f"proxy: unknown command: {parsed.command}", file=sys.stderr)
             sys.stderr.write(USAGE)
             return 2
@@ -200,11 +214,11 @@ def main(argv: list[str]) -> int:
 
         if parsed.command == "env":
             endpoint, no_proxy, _ = _settings_endpoint(parsed.proxy)
-            print(proxy_helper.env_output(endpoint, no_proxy))
+            print(proxy_helper.env_output(endpoint, no_proxy, as_json=parsed.json))
             return 0
 
         context, _, _ = _build_context(
-            parsed.proxy, parsed.force, parsed.dry_run, parsed.verbose
+            parsed.proxy, parsed.force, parsed.dry_run, parsed.verbose, parsed.json
         )
         action = SWITCH_COMMANDS[parsed.command]
         explicit = bool(parsed.carriers)

@@ -9,8 +9,9 @@ manifest; carriers know nothing about those.
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from dataclasses import dataclass
-from typing import Any, Callable
+from typing import Any
 
 
 @dataclass(frozen=True)
@@ -36,3 +37,8 @@ class Carrier:
     # file must stay even when it did not exist before ``on``.
     delete_created_file: bool = True
     default_mode: int = 0o644
+    # Rendered content can depend on something outside the file -- ssh shells
+    # out to ``ncat``. Called with the text the carrier is about to write (or,
+    # for ``status``, the text already on disk) and returns a warning, which the
+    # engine prints before writing and ``status`` appends to the note.
+    check_rendered: Callable[[str | None], str] | None = None

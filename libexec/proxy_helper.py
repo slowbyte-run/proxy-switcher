@@ -21,7 +21,14 @@ from urllib.parse import urlsplit
 import carriers
 from carriers import get as get_carrier
 from carriers import names as carrier_names
-from proxy_common import PROXY_VARS, State, proxy_values
+from proxy_common import (
+    JSON_SCHEMA,
+    NODE_FETCH_VALUE,
+    NODE_FETCH_VAR,
+    PROXY_VARS,
+    State,
+    proxy_values,
+)
 
 DEFAULT_ENDPOINT = "http://127.0.0.1:7890"
 DEFAULT_NO_PROXY = "localhost,127.0.0.1,::1"
@@ -90,9 +97,7 @@ def _exclude_list(path: str, raw) -> tuple[str, ...]:
     known = _known_carriers()
     unknown = [name for name in raw if name not in known]
     if unknown:
-        raise ConfigError(
-            f"exclude in {path} names unknown carrier: {unknown[0]}"
-        )
+        raise ConfigError(f"exclude in {path} names unknown carrier: {unknown[0]}")
     # Preserve the user's order while dropping duplicates.
     return tuple(dict.fromkeys(raw))
 
@@ -166,9 +171,7 @@ def _resolve(host: str, port: int, deadline: float):
         try:
             result.extend(
                 (info[0], info[4][:2])
-                for info in socket.getaddrinfo(
-                    host, port, type=socket.SOCK_STREAM
-                )
+                for info in socket.getaddrinfo(host, port, type=socket.SOCK_STREAM)
             )
         except (OSError, UnicodeError, ValueError):
             pass
@@ -218,18 +221,68 @@ def probe_endpoint(endpoint: str) -> dict:
     return {"state": state, "host": host, "port": port}
 
 
+def _rendered_warning(carrier, path: str) -> str:
+    """Ask the carrier whether the bytes currently on disk can actually work."""
+    if carrier.check_rendered is None:
+        return ""
+    try:
+        with open(path, encoding="utf-8", errors="replace") as handle:
+            text = handle.read()
+    except OSError:
+        return ""
+    return carrier.check_rendered(text)
+
+
+def _manifest_entries() -> dict:
+    """The manifest's carrier entries, or {} when there is nothing usable.
+
+    ``status`` is a read-only view that must always succeed, so a missing or
+    corrupt manifest degrades to "nothing pending" here; the engine reports the
+    same file loudly whenever a switch actually needs it.
+    """
+    path = os.path.join(state_path(), "manifest.json")
+    try:
+        with open(path, encoding="utf-8") as handle:
+            manifest = json.load(handle)
+    except (OSError, json.JSONDecodeError):
+        return {}
+    entries = manifest.get("carriers") if isinstance(manifest, dict) else None
+    return entries if isinstance(entries, dict) else {}
+
+
+def _pending_reloads() -> set[str]:
+    """Carriers the last switch wrote without their post-write reload landing."""
+    return {
+        name
+        for name, entry in _manifest_entries().items()
+        if isinstance(entry, dict) and entry.get("pending_reload")
+    }
+
+
 def collect_status(check: bool = False, endpoint: str | None = None) -> dict:
     settings = load_settings()
     chosen = endpoint or settings.endpoint
     no_proxy = settings.no_proxy
     excluded = set(settings.exclude)
     context = StatusContext(home=home_dir(), config_home=config_home())
+    pending = _pending_reloads()
 
     rows = []
     for carrier in carriers.all_carriers():
         path = carrier.resolve(context)
         state = carrier.read_state(path)
-        note = carrier.note_off if state == State.OFF and carrier.note_off else carrier.note
+        note = (
+            carrier.note_off
+            if state == State.OFF and carrier.note_off
+            else carrier.note
+        )
+        constraint = _rendered_warning(carrier, path)
+        if constraint:
+            note = (note + "; " if note else "") + constraint
+        if carrier.name in pending:
+            # The write landed but the reload did not: the file is already the
+            # new one, so this is the only place the gap can surface.
+            note = (note + "; " if note else "") + "written but not reloaded"
         rows.append(
             carrier_view(
                 carrier.name,
@@ -242,6 +295,7 @@ def collect_status(check: bool = False, endpoint: str | None = None) -> dict:
         )
 
     status = {
+        "schema": JSON_SCHEMA,
         "endpoint": chosen,
         "no_proxy": no_proxy,
         "carriers": rows,
@@ -277,9 +331,7 @@ def render_human(status: dict) -> str:
             widths[index] = max(widths[index], len(row[index]))
 
     def format_row(row: list[str]) -> str:
-        cells = [
-            row[index].ljust(widths[index]) for index in range(len(headers) - 1)
-        ]
+        cells = [row[index].ljust(widths[index]) for index in range(len(headers) - 1)]
         cells.append(row[-1])
         return "  ".join(cells).rstrip()
 
@@ -295,16 +347,38 @@ def status_output(check: bool, as_json: bool, endpoint: str | None) -> str:
     return render_human(status)
 
 
-def env_output(endpoint: str, no_proxy: str) -> str:
+def env_document(endpoint: str, no_proxy: str) -> dict:
+    """The `env --json` form: the same decisions, without shell quoting."""
+    on = _shell_state() == State.ON
+    values = proxy_values(endpoint, no_proxy)
+    return {
+        "schema": JSON_SCHEMA,
+        "endpoint": endpoint,
+        "no_proxy": no_proxy,
+        "state": State.ON.value if on else State.OFF.value,
+        "exports": {**values, NODE_FETCH_VAR: NODE_FETCH_VALUE} if on else {},
+        "unsets": [] if on else list(PROXY_VARS),
+    }
+
+
+def _shell_state() -> str:
     context = StatusContext(home=home_dir(), config_home=config_home())
     carrier = get_carrier("shell")
-    path = carrier.resolve(context)
-    state = carrier.read_state(path)
+    return carrier.read_state(carrier.resolve(context))
+
+
+def env_output(endpoint: str, no_proxy: str, as_json: bool = False) -> str:
+    if as_json:
+        return json.dumps(
+            env_document(endpoint, no_proxy), ensure_ascii=False, indent=2
+        )
+    state = _shell_state()
     values = proxy_values(endpoint, no_proxy)
     lines = []
     if state == State.ON:
         for name in PROXY_VARS:
             lines.append(f"export {name}={shlex.quote(values[name])}")
+        lines.append(f"export {NODE_FETCH_VAR}={NODE_FETCH_VALUE}")
     else:
         for name in PROXY_VARS:
             lines.append(f"unset {name}")
