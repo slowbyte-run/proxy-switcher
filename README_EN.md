@@ -73,12 +73,20 @@ After writing the niri config the tool calls `niri msg action load-config-file`,
 
 ## Installation
 
-Requires Linux with niri, Python 3.11+, and optionally the `niri` binary.
+Requires Linux with niri, Python 3.11+, and optionally the `niri` binary (when present the tool asks it to reload after writing; when absent it only warns, and the switch itself is unaffected).
 
 ```bash
 git clone https://github.com/slowbyte-run/proxy-switcher
 cd proxy-switcher
 export PATH="$PWD/bin:$PATH"
+```
+
+The command is `proxysw`, not `proxy`: the distribution's `libproxy` package already owns `/usr/bin/proxy`, so the name would resolve by `PATH` order and fail silently when the wrong binary won. See [ADR 0005](docs/adr/0005-command-name-is-proxysw.md).
+
+To install into `~/.local/bin`, a symlink is enough — the launcher resolves its own path:
+
+```bash
+ln -s "$PWD/bin/proxysw" ~/.local/bin/proxysw
 ```
 
 No build step and no package manager. Running the tests requires [bats](https://github.com/bats-core/bats-core) and PyYAML.
@@ -88,51 +96,51 @@ No build step and no package manager. Running the tests requires [bats](https://
 Inspect the current state (read-only and safe):
 
 ```bash
-proxy status
+proxysw status
 ```
 
 Preview what would change:
 
 ```bash
-proxy --dry-run on
+proxysw --dry-run on
 ```
 
 Turn every carrier on and load the state into the current shell:
 
 ```bash
-proxy on
-eval "$(proxy env)"
+proxysw on
+eval "$(proxysw env)"
 ```
 
 Turn the proxy off:
 
 ```bash
-proxy off
+proxysw off
 ```
 
 Toggle only pnpm, or check whether the local proxy port is listening:
 
 ```bash
-proxy toggle pnpm
-proxy status --check
+proxysw toggle pnpm
+proxysw status --check
 ```
 
 Recover the files as they were before the first switch:
 
 ```bash
-proxy restore
+proxysw restore
 ```
 
 ## Commands
 
 | Command | Description |
 | --- | --- |
-| `proxy on [carrier...]` | Turn on; no argument means every managed carrier |
-| `proxy off [carrier...]` | Render the canonical no-proxy state |
-| `proxy toggle [carrier...]` | Turn everything on unless every selected carrier is already on |
-| `proxy restore [carrier...]` | Restore the pre-switch snapshot byte for byte |
-| `proxy status [--check] [--json]` | Show state; `--check` probes the endpoint port, `--json` emits machine-readable output |
-| `proxy env [--json]` | Print `export` / `unset` statements for `eval`; `--json` emits the same decisions as data |
+| `proxysw on [carrier...]` | Turn on; no argument means every managed carrier |
+| `proxysw off [carrier...]` | Render the canonical no-proxy state |
+| `proxysw toggle [carrier...]` | Turn everything on unless every selected carrier is already on |
+| `proxysw restore [carrier...]` | Restore the pre-switch snapshot byte for byte |
+| `proxysw status [--check] [--json] [--short] [--require-up]` | Show state; `--check` probes the endpoint port, `--json` emits machine-readable output, `--short` prints only carrier and state, `--require-up` exits 1 when the endpoint is down |
+| `proxysw env [--shell <name>] [--json]` | Print `export` / `unset` statements for `eval`; `--shell` picks bash, zsh or fish, `--json` emits the same decisions as data |
 
 | Option | Applies to | Description |
 | --- | --- | --- |
@@ -141,11 +149,14 @@ proxy restore
 | `--dry-run` | switch and restore | Print carriers and files without writing |
 | `-v`, `--verbose` | switch and restore | Explain what happened per carrier |
 | `--check` | `status` | Bounded local TCP probe; no HTTP request |
+| `--short` | `status` | Carrier and state columns only, for narrow terminals |
+| `--require-up` | `status` | Exit 1 when the endpoint is down; implies `--check` |
+| `--shell <name>` | `env` | `bash`, `zsh` or `fish`; inferred from `$SHELL` when omitted |
 | `--json` | `status`, `env`, `--dry-run` | Machine-readable output; carries a top-level `schema` field |
 | `-V`, `--version` | all commands | Print the version and exit |
 | `-h`, `--help` | all commands | Show help |
 
-The machine-readable output is the integration surface for status bars and wrapper scripts: `proxy status --json` reports every carrier, and `proxy --dry-run on --json` returns the full change plan including conflicts and failures. Both carry `schema`, bumped whenever a field changes. There is no TUI yet.
+The machine-readable output is the integration surface for status bars and wrapper scripts: `proxysw status --json` reports every carrier, and `proxysw --dry-run on --json` returns the full change plan including conflicts and failures. Both carry `schema`, bumped whenever a field changes. There is no TUI yet.
 
 The difference between `off` and `restore` is deliberate: `off` renders "no proxy configured", while `restore` rolls the bytes back. The original file may already contain proxy values, so making `off` a rollback would turn "off" into "put the proxy back". See [ADR 0003](docs/adr/0003-off-renders-no-proxy-restore-recovers.md).
 
@@ -172,6 +183,8 @@ State and snapshots live in `$XDG_STATE_HOME/proxy-switcher/manifest.json`.
 **niri**: rewrites only the six proxy keys and `NODE_USE_ENV_PROXY` inside `environment {}`, preserving every other variable and comment. `off` writes `null` to remove them explicitly; a block created by `on` is removed again by `off`. It affects processes niri spawns directly (GUI apps, terminal windows); git/curl only count when they bypass the shell rc.
 
 **shell**: maintains a marked snippet. `on` writes six `export` lines plus `export NODE_USE_ENV_PROXY=1`; `off` writes six explicit `unset` lines so they override the niri block. **`off` deliberately does not unset the Node flag** — it only enables Node to read the six variables, and you may have set it yourself outside the snippet; removing it would silently override that. The rc file follows `$SHELL`: `~/.zshrc` or `~/.bashrc`, defaulting to zsh. It governs git/curl in a terminal.
+
+fish is not a managed carrier (see [ADR 0006](docs/adr/0006-fish-is-not-a-managed-carrier.md)): `config.fish` gives no "runs last" guarantee, so a snippet written there is easily overridden by the user's own `set` calls. fish users load the values with `eval (proxysw env --shell fish | string collect)` instead.
 
 **npm / pnpm**: each writes three keys to its own file. npm keeps mode 0600 and replaces existing keys instead of appending duplicates; pnpm is edited line by line so comments and indentation survive.
 
@@ -206,12 +219,14 @@ bats --filter 'restore' tests/
 - Running processes are never updated; only newly spawned ones see the change.
 - Apps launched from the DMS launcher inherit DMS's startup environment and may need a DMS restart.
 - `all_proxy` / `ALL_PROXY` are never written, and FlClash's private config is never parsed.
+- fish is not a managed carrier: `proxysw env --shell fish` renders the right syntax but never writes `config.fish`.
+- Concurrent switches queue (5s by default, then exit 1) instead of interleaving.
 - No TUI and no status-bar plugin yet.
 
 ## Development
 
 ```
-bin/proxy                 launcher; only execs the Python entry point
+bin/proxysw                launcher; only execs the Python entry point
 libexec/proxy_cli.py      the single argument parser and usage text
 libexec/proxy_engine.py   snapshots, conflict detection, atomic writes, manifest
 libexec/proxy_helper.py   config, status output, env, port probe

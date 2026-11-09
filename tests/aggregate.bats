@@ -34,7 +34,7 @@ assert_all_carrier_files_match() {
 @test "on without a carrier name switches all five managed carriers in order" {
   write_all_carriers_off
 
-  run_proxy on
+  run_proxysw on
 
   [ "$status" -eq 0 ]
   local expected actual
@@ -44,7 +44,7 @@ assert_all_carrier_files_match() {
     | sed 's/:.*//')"
   [ "$actual" = "$expected" ]
 
-  run_proxy status
+  run_proxysw status
   [ "$status" -eq 0 ]
   for carrier in $(managed_carriers); do
     assert_carrier_state "$carrier" on
@@ -58,7 +58,7 @@ endpoint = "http://127.0.0.1:7895"
 TOML
   copy_all_carrier_files "$FIXTURE_ROOT/original"
 
-  run_proxy on
+  run_proxysw on
   [ "$status" -eq 0 ]
   grep -qF '7895' "$(niri_config_path)"
   grep -qF '7895' "$(shell_rc_path)"
@@ -66,7 +66,7 @@ TOML
   grep -qF '7895' "$(pnpm_config_path)"
   grep -qF '7895' "$(ssh_config_path)"
 
-  run_proxy off
+  run_proxysw off
   [ "$status" -eq 0 ]
   ! grep -qF '7895' "$(niri_config_path)"
   ! grep -qF '7895' "$(shell_rc_path)"
@@ -74,12 +74,12 @@ TOML
   ! grep -qF '7895' "$(pnpm_config_path)"
   ! grep -qF '7895' "$(ssh_config_path)"
 
-  run_proxy restore
+  run_proxysw restore
   [ "$status" -eq 0 ]
 
   assert_all_carrier_files_match "$FIXTURE_ROOT/original"
 
-  run_proxy status
+  run_proxysw status
   [ "$status" -eq 0 ]
   for carrier in $(managed_carriers); do
     assert_carrier_state "$carrier" on
@@ -90,10 +90,10 @@ TOML
   write_all_carriers_on
   copy_all_carrier_files "$FIXTURE_ROOT/original"
 
-  run_proxy on
+  run_proxysw on
   [ "$status" -eq 0 ]
 
-  run_proxy off
+  run_proxysw off
   [ "$status" -eq 0 ]
   ! grep -qF '127.0.0.1:7890' "$(niri_config_path)"
   ! grep -qF '127.0.0.1:7890' "$(shell_rc_path)"
@@ -101,7 +101,7 @@ TOML
   ! grep -qF '127.0.0.1:7890' "$(pnpm_config_path)"
   ! grep -qF '127.0.0.1:7890' "$(ssh_config_path)"
 
-  run_proxy restore
+  run_proxysw restore
   [ "$status" -eq 0 ]
 
   assert_all_carrier_files_match "$FIXTURE_ROOT/original"
@@ -113,25 +113,25 @@ TOML
   write_all_carriers_off
   copy_all_carrier_files "$FIXTURE_ROOT/original"
 
-  run_proxy toggle
+  run_proxysw toggle
   [ "$status" -eq 0 ]
   for carrier in $(managed_carriers); do
     [[ "$output" == *"$carrier: on"* ]]
   done
 
-  run_proxy status
+  run_proxysw status
   [ "$status" -eq 0 ]
   for carrier in $(managed_carriers); do
     assert_carrier_state "$carrier" on
   done
 
-  run_proxy toggle
+  run_proxysw toggle
   [ "$status" -eq 0 ]
   for carrier in $(managed_carriers); do
     [[ "$output" == *"$carrier: off"* ]]
   done
 
-  run_proxy status
+  run_proxysw status
   [ "$status" -eq 0 ]
   for carrier in $(managed_carriers); do
     assert_carrier_state "$carrier" off
@@ -142,13 +142,13 @@ TOML
 @test "toggle turns all off only when every carrier is on" {
   write_all_carriers_off
 
-  run_proxy on
+  run_proxysw on
   [ "$status" -eq 0 ]
 
-  run_proxy toggle
+  run_proxysw toggle
 
   [ "$status" -eq 0 ]
-  run_proxy status
+  run_proxysw status
   [ "$status" -eq 0 ]
   for carrier in $(managed_carriers); do
     assert_carrier_state "$carrier" off
@@ -159,10 +159,10 @@ TOML
   write_all_carriers_off
   write_niri_on
 
-  run_proxy toggle
+  run_proxysw toggle
 
   [ "$status" -eq 0 ]
-  run_proxy status
+  run_proxysw status
   [ "$status" -eq 0 ]
   for carrier in $(managed_carriers); do
     assert_carrier_state "$carrier" on
@@ -175,7 +175,7 @@ TOML
 exclude = ["ssh", "pnpm"]
 TOML
 
-  run_proxy status
+  run_proxysw status
 
   [ "$status" -eq 0 ]
   assert_carrier_state ssh off
@@ -197,7 +197,7 @@ TOML
 exclude = ["ssh"]
 TOML
 
-  run_proxy status --json
+  run_proxysw status --json
 
   [ "$status" -eq 0 ]
   [ "$(printf '%s\n' "$output" | jq -r \
@@ -218,7 +218,7 @@ TOML
   cp -p "$(ssh_config_path)" "$FIXTURE_ROOT/ssh.original"
   cp -p "$(pnpm_config_path)" "$FIXTURE_ROOT/pnpm.original"
 
-  run_proxy on --dry-run
+  run_proxysw on --dry-run
 
   [ "$status" -eq 0 ]
   [[ "$output" == *"ssh: skipped"* ]]
@@ -228,13 +228,13 @@ TOML
   cmp -s "$(ssh_config_path)" "$FIXTURE_ROOT/ssh.original"
   cmp -s "$(pnpm_config_path)" "$FIXTURE_ROOT/pnpm.original"
 
-  run_proxy on
+  run_proxysw on
 
   [ "$status" -eq 0 ]
   cmp -s "$(ssh_config_path)" "$FIXTURE_ROOT/ssh.original"
   cmp -s "$(pnpm_config_path)" "$FIXTURE_ROOT/pnpm.original"
 
-  run_proxy status
+  run_proxysw status
   [ "$status" -eq 0 ]
   assert_carrier_state niri on
   assert_carrier_state shell on
@@ -250,7 +250,7 @@ exclude = ["ssh"]
 TOML
   cp -p "$(ssh_config_path)" "$FIXTURE_ROOT/ssh.original"
 
-  run_proxy on ssh
+  run_proxysw on ssh
 
   [ "$status" -eq 0 ]
   [[ "$output" == *"ssh: skipped"* ]]
@@ -262,7 +262,7 @@ TOML
   local before after
   before="$(snapshot_tree "$HOME" "$XDG_CONFIG_HOME" "$XDG_STATE_HOME" "$REPO_ROOT")"
 
-  run_proxy on --dry-run
+  run_proxysw on --dry-run
 
   [ "$status" -eq 0 ]
   for carrier in $(managed_carriers); do
@@ -277,7 +277,7 @@ TOML
 @test "--dry-run names the file for a single carrier too" {
   write_niri_plain
 
-  run_proxy on niri --dry-run
+  run_proxysw on niri --dry-run
 
   [ "$status" -eq 0 ]
   [[ "$output" == *"niri: would turn on"* ]]
@@ -287,27 +287,27 @@ TOML
 @test "--verbose explains what happened to each carrier and its file" {
   write_niri_plain
 
-  run_proxy on niri --verbose
+  run_proxysw on niri --verbose
 
   [ "$status" -eq 0 ]
-  [[ "$output" == *"proxy: niri: wrote $(niri_config_path)"* ]]
-  [[ "$output" == *"proxy: niri: snapshot"* ]]
+  [[ "$output" == *"proxysw: niri: wrote $(niri_config_path)"* ]]
+  [[ "$output" == *"proxysw: niri: snapshot"* ]]
   [[ "$output" == *"niri: on"* ]]
 }
 
 @test "a conflict returns 1, changes nothing and says so" {
   write_all_carriers_off
-  run_proxy on niri
+  run_proxysw on niri
   [ "$status" -eq 0 ]
   printf '\n// edited by hand\n' >> "$(niri_config_path)"
 
-  run_proxy on
+  run_proxysw on
 
   [ "$status" -eq 1 ]
   [[ "$output" == *"conflict"* ]]
   [[ "$output" == *"no carriers were changed"* ]]
 
-  run_proxy status
+  run_proxysw status
   [ "$status" -eq 0 ]
   assert_carrier_state niri on
   assert_carrier_state shell off
@@ -318,19 +318,19 @@ TOML
 
 @test "--dry-run uses the same conflict exit code as a real switch" {
   write_all_carriers_off
-  run_proxy on niri
+  run_proxysw on niri
   [ "$status" -eq 0 ]
   printf '\n// edited by hand\n' >> "$(niri_config_path)"
   local before
   before="$(sha256sum "$(niri_config_path)" | cut -d' ' -f1)"
 
-  run_proxy off --dry-run
+  run_proxysw off --dry-run
 
   [ "$status" -eq 1 ]
   [[ "$output" == *"conflict"* ]]
   [ "$(sha256sum "$(niri_config_path)" | cut -d' ' -f1)" = "$before" ]
 
-  run_proxy off
+  run_proxysw off
   [ "$status" -eq 1 ]
 }
 
@@ -341,7 +341,7 @@ TOML
   local before after
   before="$(snapshot_tree "$HOME" "$XDG_CONFIG_HOME" "$XDG_STATE_HOME")"
 
-  run_proxy on --dry-run
+  run_proxysw on --dry-run
 
   [ "$status" -eq 1 ]
   [[ "$output" == *"pnpm"* ]]
@@ -354,13 +354,13 @@ TOML
   rm -f "$(pnpm_config_path)"
   mkdir "$(pnpm_config_path)"
 
-  run_proxy on
+  run_proxysw on
 
   [ "$status" -eq 1 ]
   [[ "$output" == *"pnpm"* ]]
-  [[ "$output" == *"proxy: partial completion: changed niri, shell, npm, ssh; not changed pnpm"* ]]
+  [[ "$output" == *"proxysw: partial completion: changed niri, shell, npm, ssh; not changed pnpm"* ]]
 
-  run_proxy status
+  run_proxysw status
   [ "$status" -eq 0 ]
   assert_carrier_state niri on
   assert_carrier_state shell on
@@ -372,27 +372,27 @@ TOML
 @test "restore reports a carrier without a snapshot instead of pretending" {
   write_npm_on
 
-  run_proxy restore npm
+  run_proxysw restore npm
 
   [ "$status" -eq 1 ]
   [[ "$output" == *"npm"* ]]
   [[ "$output" == *"no snapshot"* ]]
   grep -qF 'proxy=http://127.0.0.1:7890' "$(npmrc_path)"
 
-  run_proxy status
+  run_proxysw status
   [ "$status" -eq 0 ]
   assert_carrier_state npm on
 }
 
 @test "restore refuses to overwrite a file changed since the last switch" {
   write_niri_plain
-  run_proxy on niri
+  run_proxysw on niri
   [ "$status" -eq 0 ]
   printf '\n// edited by hand\n' >> "$(niri_config_path)"
   local before
   before="$(sha256sum "$(niri_config_path)" | cut -d' ' -f1)"
 
-  run_proxy restore niri
+  run_proxysw restore niri
 
   [ "$status" -eq 1 ]
   [[ "$output" == *"conflict"* ]]
@@ -402,11 +402,11 @@ TOML
 @test "--force restore overwrites a file changed since the last switch" {
   write_niri_plain
   cp "$(niri_config_path)" "$FIXTURE_ROOT/original"
-  run_proxy on niri
+  run_proxysw on niri
   [ "$status" -eq 0 ]
   printf '\n// edited by hand\n' >> "$(niri_config_path)"
 
-  run_proxy restore niri --force
+  run_proxysw restore niri --force
 
   [ "$status" -eq 0 ]
   cmp "$(niri_config_path)" "$FIXTURE_ROOT/original"
@@ -415,14 +415,14 @@ TOML
 @test "restore is idempotent and does not need a new snapshot" {
   write_niri_plain
   cp "$(niri_config_path)" "$FIXTURE_ROOT/original"
-  run_proxy on niri
+  run_proxysw on niri
   [ "$status" -eq 0 ]
-  run_proxy restore niri
+  run_proxysw restore niri
   [ "$status" -eq 0 ]
   local snapshots after
   snapshots="$(proxy_snapshot_count)"
 
-  run_proxy restore niri
+  run_proxysw restore niri
 
   [ "$status" -eq 0 ]
   cmp "$(niri_config_path)" "$FIXTURE_ROOT/original"
@@ -431,11 +431,11 @@ TOML
 
 @test "restore deletes a file whose original did not exist" {
   rm -f "$(niri_config_path)"
-  run_proxy on niri
+  run_proxysw on niri
   [ "$status" -eq 0 ]
   [ -f "$(niri_config_path)" ]
 
-  run_proxy restore niri
+  run_proxysw restore niri
 
   [ "$status" -eq 0 ]
   [ ! -e "$(niri_config_path)" ]
@@ -443,12 +443,12 @@ TOML
 
 @test "--dry-run restore names the file and writes nothing" {
   write_niri_plain
-  run_proxy on niri
+  run_proxysw on niri
   [ "$status" -eq 0 ]
   local before
   before="$(sha256sum "$(niri_config_path)" | cut -d' ' -f1)"
 
-  run_proxy restore niri --dry-run
+  run_proxysw restore niri --dry-run
 
   [ "$status" -eq 0 ]
   [[ "$output" == *"niri: would restore"* ]]
@@ -461,7 +461,7 @@ TOML
   local before after
   before="$(snapshot_tree "$HOME" "$XDG_CONFIG_HOME")"
 
-  run_proxy restore
+  run_proxysw restore
 
   [ "$status" -eq 0 ]
   [[ "$output" == *"nothing to restore"* ]]
@@ -470,18 +470,18 @@ TOML
 }
 
 @test "toggle usage errors exit with code 2" {
-  run_proxy toggle docker
+  run_proxysw toggle docker
   [ "$status" -eq 2 ]
   [[ "$output" == *"read-only"* ]]
 
-  run_proxy toggle nope
+  run_proxysw toggle nope
   [ "$status" -eq 2 ]
   [[ "$output" == *"unknown carrier"* ]]
 
-  run_proxy toggle --nope
+  run_proxysw toggle --nope
   [ "$status" -eq 2 ]
 
-  run_proxy toggle --proxy
+  run_proxysw toggle --proxy
   [ "$status" -eq 2 ]
 }
 
@@ -490,7 +490,7 @@ TOML
 exclude = ["nope"]
 TOML
 
-  run_proxy on
+  run_proxysw on
 
   [ "$status" -eq 1 ]
   [[ "$output" == *"exclude"* ]]
@@ -499,7 +499,7 @@ TOML
 exclude = "ssh"
 TOML
 
-  run_proxy status
+  run_proxysw status
   [ "$status" -eq 1 ]
   [[ "$output" == *"exclude"* ]]
 }
@@ -511,7 +511,7 @@ TOML
   local before
   before="$(sha256sum "$(niri_config_path)" | cut -d' ' -f1)"
 
-  run_proxy on niri
+  run_proxysw on niri
 
   [ "$status" -eq 1 ]
   [[ "$output" == *"newer"* ]]
@@ -524,7 +524,7 @@ TOML
   mkdir -p "$(proxy_state_root)"
   printf '{"version": "1", "carriers": {}}\n' > "$(proxy_manifest_path)"
 
-  run_proxy on niri
+  run_proxysw on niri
 
   [ "$status" -eq 1 ]
   [[ "$output" == *"invalid version"* ]]
@@ -535,7 +535,7 @@ TOML
   mkdir -p "$(proxy_state_root)"
   printf '{"carriers": {}}\n' > "$(proxy_manifest_path)"
 
-  run_proxy on niri
+  run_proxysw on niri
 
   [ "$status" -eq 0 ]
   [ "$(jq -r '.version' "$(proxy_manifest_path)")" = "1" ]
@@ -546,7 +546,7 @@ TOML
   local before after
   before="$(snapshot_tree "$HOME" "$XDG_CONFIG_HOME" "$XDG_STATE_HOME")"
 
-  run_proxy on --dry-run --json
+  run_proxysw on --dry-run --json
 
   [ "$status" -eq 0 ]
   printf '%s\n' "$output" | jq -e . >/dev/null
@@ -565,7 +565,7 @@ TOML
 @test "--dry-run --json reports already-on carriers as unchanged" {
   write_all_carriers_on
 
-  run_proxy on --dry-run --json
+  run_proxysw on --dry-run --json
 
   [ "$status" -eq 0 ]
   [ "$(printf '%s\n' "$output" | jq -r '[.carriers[] | select(.changed)] | length')" -eq 0 ]
@@ -573,11 +573,11 @@ TOML
 
 @test "--dry-run --json reports a conflict and exits 1" {
   write_all_carriers_off
-  run_proxy on niri
+  run_proxysw on niri
   [ "$status" -eq 0 ]
   printf '\n// edited by hand\n' >> "$(niri_config_path)"
 
-  run_proxy off --dry-run --json
+  run_proxysw off --dry-run --json
 
   [ "$status" -eq 1 ]
   printf '%s\n' "$output" | jq -e . >/dev/null
@@ -590,7 +590,7 @@ TOML
 exclude = ["ssh"]
 TOML
 
-  run_proxy on --dry-run --json
+  run_proxysw on --dry-run --json
 
   [ "$status" -eq 0 ]
   [ "$(printf '%s\n' "$output" | jq -r '.skipped | join(",")')" = "ssh" ]
@@ -598,18 +598,18 @@ TOML
 }
 
 @test "--json without --dry-run is a usage error for switch commands" {
-  run_proxy on --json
+  run_proxysw on --json
   [ "$status" -eq 2 ]
   [[ "$output" == *"--dry-run"* ]]
 
-  run_proxy restore --json
+  run_proxysw restore --json
   [ "$status" -eq 2 ]
 }
 
 @test "the plan document carries a schema version" {
   write_all_carriers_off
 
-  run_proxy on --dry-run --json
+  run_proxysw on --dry-run --json
 
   [ "$status" -eq 0 ]
   [ "$(printf '%s\n' "$output" | jq -r .schema)" = "1" ]

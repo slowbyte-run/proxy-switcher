@@ -15,14 +15,18 @@ fixture_init() {
   export HOME="$FIXTURE_ROOT/home"
   export XDG_CONFIG_HOME="$HOME/.config"
   export XDG_STATE_HOME="$HOME/.local/state"
+  # The concurrency lock lives in the runtime directory. Pointing it inside the
+  # fixture keeps tests off the real one and gives each test its own lock.
+  export XDG_RUNTIME_DIR="$FIXTURE_ROOT/run"
   export SHELL=/bin/zsh
-  export PROXY_BIN="$REPO_ROOT/bin/proxy"
+  export PROXYSW_BIN="$REPO_ROOT/bin/proxysw"
   export NIRI_STUB_LOG="$FIXTURE_ROOT/niri-argv.log"
 
   mkdir -p "$HOME" \
     "$XDG_CONFIG_HOME/niri" \
     "$XDG_CONFIG_HOME/pnpm" \
     "$HOME/.ssh" \
+    "$XDG_RUNTIME_DIR" \
     "$FIXTURE_ROOT/bin"
 
   cat > "$FIXTURE_ROOT/bin/niri" <<'STUB'
@@ -36,8 +40,8 @@ STUB
   export PATH
 }
 
-run_proxy() {
-  run "$PROXY_BIN" "$@"
+run_proxysw() {
+  run "$PROXYSW_BIN" "$@"
 }
 
 niri_config_path() { printf '%s\n' "$XDG_CONFIG_HOME/niri/config.kdl"; }

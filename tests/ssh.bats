@@ -89,7 +89,7 @@ proxy_line() {
   before_example="$(host_block example.com)"
   before_internal="$(host_block internal.example)"
 
-  run_proxy on ssh
+  run_proxysw on ssh
 
   [ "$status" -eq 0 ]
   [ "$(host_block example.com)" = "$before_example" ]
@@ -107,7 +107,7 @@ proxy_line() {
   before_example="$(host_block example.com)"
   before_internal="$(host_block internal.example)"
 
-  run_proxy off ssh
+  run_proxysw off ssh
 
   [ "$status" -eq 0 ]
   [ "$(host_block example.com)" = "$before_example" ]
@@ -122,7 +122,7 @@ proxy_line() {
   before_example="$(host_block example.com)"
   before_internal="$(host_block internal.example)"
 
-  run_proxy off ssh
+  run_proxysw off ssh
 
   [ "$status" -eq 0 ]
   [ "$(host_block example.com)" = "$before_example" ]
@@ -133,7 +133,7 @@ proxy_line() {
 @test "on inserts ProxyCommand when the github.com block has none" {
   write_ssh_without_github_proxy
 
-  run_proxy on ssh
+  run_proxysw on ssh
 
   [ "$status" -eq 0 ]
   [ "$(proxy_line "$(host_block github.com)")" = \
@@ -148,7 +148,7 @@ proxy_line() {
 endpoint = "http://127.0.0.1:7895"
 TOML
 
-  run_proxy on ssh
+  run_proxysw on ssh
   [ "$status" -eq 0 ]
   grep -qF 'ProxyCommand ncat --proxy 127.0.0.1:7895 --proxy-type http %h %p' \
     "$(ssh_config_path)"
@@ -157,7 +157,7 @@ TOML
 endpoint = "http://127.0.0.1:7896"
 TOML
 
-  run_proxy on ssh
+  run_proxysw on ssh
 
   [ "$status" -eq 0 ]
   grep -qF 'ProxyCommand ncat --proxy 127.0.0.1:7896 --proxy-type http %h %p' \
@@ -171,7 +171,7 @@ TOML
 endpoint = "http://127.0.0.1:7897"
 TOML
 
-  run_proxy on ssh
+  run_proxysw on ssh
   [ "$status" -eq 0 ]
 
   # -F keeps OpenSSH on the fixture file: ssh -G resolves ~ from passwd, not $HOME.
@@ -185,7 +185,7 @@ TOML
 @test "ssh -G reports no proxycommand after off" {
   write_ssh_proxy_on
 
-  run_proxy off ssh
+  run_proxysw off ssh
   [ "$status" -eq 0 ]
 
   run ssh -G -F "$(ssh_config_path)" github.com
@@ -197,7 +197,7 @@ TOML
 @test "status reports ssh off with the direct-access consequence" {
   write_ssh_tricky
 
-  run_proxy status
+  run_proxysw status
 
   [ "$status" -eq 0 ]
   assert_carrier_state ssh off
@@ -208,29 +208,29 @@ TOML
 @test "status reports ssh on after on and off after off" {
   write_ssh_tricky
 
-  run_proxy on ssh
+  run_proxysw on ssh
   [ "$status" -eq 0 ]
-  run_proxy status
+  run_proxysw status
   [ "$status" -eq 0 ]
   assert_carrier_state ssh on
 
-  run_proxy off ssh
+  run_proxysw off ssh
   [ "$status" -eq 0 ]
-  run_proxy status
+  run_proxysw status
   [ "$status" -eq 0 ]
   assert_carrier_state ssh off
 }
 
 @test "repeated on is idempotent and creates no extra snapshot" {
   write_ssh_tricky
-  run_proxy on ssh
+  run_proxysw on ssh
   [ "$status" -eq 0 ]
   local first_hash first_snapshots
   first_hash="$(sha256sum "$(ssh_config_path)" | cut -d' ' -f1)"
   first_snapshots="$(proxy_snapshot_count)"
   [ "$first_snapshots" -eq 1 ]
 
-  run_proxy on ssh
+  run_proxysw on ssh
 
   [ "$status" -eq 0 ]
   [ "$(sha256sum "$(ssh_config_path)" | cut -d' ' -f1)" = "$first_hash" ]
@@ -240,7 +240,7 @@ TOML
 @test "on creates a 600 ssh config when the file is missing" {
   rm -f "$(ssh_config_path)"
 
-  run_proxy on ssh
+  run_proxysw on ssh
 
   [ "$status" -eq 0 ]
   [ -f "$(ssh_config_path)" ]
@@ -254,11 +254,11 @@ TOML
   write_ssh_without_github
   cp -p "$(ssh_config_path)" "$FIXTURE_ROOT/original"
 
-  run_proxy on ssh
+  run_proxysw on ssh
   [ "$status" -eq 0 ]
   grep -qF 'Host github.com' "$(ssh_config_path)"
 
-  run_proxy off ssh
+  run_proxysw off ssh
   [ "$status" -eq 0 ]
 
   cmp "$(ssh_config_path)" "$FIXTURE_ROOT/original"
@@ -271,7 +271,7 @@ TOML
   local before
   before="$(sha256sum "$(ssh_config_path)" | cut -d' ' -f1)"
 
-  run_proxy off ssh
+  run_proxysw off ssh
 
   [ "$status" -eq 0 ]
   [ "$(sha256sum "$(ssh_config_path)" | cut -d' ' -f1)" = "$before" ]
@@ -281,11 +281,11 @@ TOML
 @test "off removes a github.com block that on appended to a missing file" {
   rm -f "$(ssh_config_path)"
 
-  run_proxy on ssh
+  run_proxysw on ssh
   [ "$status" -eq 0 ]
   [ -f "$(ssh_config_path)" ]
 
-  run_proxy off ssh
+  run_proxysw off ssh
   [ "$status" -eq 0 ]
   [ ! -e "$(ssh_config_path)" ]
 }
@@ -294,11 +294,11 @@ TOML
   write_ssh_tricky
   chmod 600 "$(ssh_config_path)"
 
-  run_proxy on ssh
+  run_proxysw on ssh
   [ "$status" -eq 0 ]
   [ "$(stat -c '%a' "$(ssh_config_path)")" = "600" ]
 
-  run_proxy off ssh
+  run_proxysw off ssh
   [ "$status" -eq 0 ]
   [ "$(stat -c '%a' "$(ssh_config_path)")" = "600" ]
 }
@@ -308,7 +308,7 @@ TOML
   local before
   before="$(snapshot_tree "$HOME" "$XDG_STATE_HOME")"
 
-  run_proxy on ssh --dry-run
+  run_proxysw on ssh --dry-run
 
   [ "$status" -eq 0 ]
   [[ "$output" == *"would"* ]]
@@ -324,7 +324,7 @@ TOML
     ln -s "$(command -v "$binary")" "$restricted/$binary"
   done
 
-  run env PATH="$restricted" "$PROXY_BIN" on ssh
+  run env PATH="$restricted" "$PROXYSW_BIN" on ssh
 
   [ "$status" -eq 0 ]
   [[ "$output" == *"ncat"* ]]
@@ -341,7 +341,7 @@ TOML
     ln -s "$(command -v "$binary")" "$restricted/$binary"
   done
 
-  run env PATH="$restricted" "$PROXY_BIN" status
+  run env PATH="$restricted" "$PROXYSW_BIN" status
 
   [ "$status" -eq 0 ]
   assert_carrier_state ssh on
@@ -351,7 +351,7 @@ TOML
 @test "status stays quiet when the ProxyCommand binary exists" {
   write_ssh_on
 
-  run_proxy status
+  run_proxysw status
 
   [ "$status" -eq 0 ]
   [[ "$output" != *"not on PATH"* ]]

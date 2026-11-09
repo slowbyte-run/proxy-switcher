@@ -32,7 +32,7 @@ strictPeerDependencies: false
 # end of settings
 YAML
 
-  run_proxy on pnpm
+  run_proxysw on pnpm
 
   [ "$status" -eq 0 ]
   grep -qE '^httpProxy: "http://127\.0\.0\.1:7890"$' "$(pnpm_config_path)"
@@ -64,7 +64,7 @@ endpoint = "http://127.0.0.1:7895"
 no_proxy = "localhost,example.test"
 TOML
 
-  run_proxy on pnpm
+  run_proxysw on pnpm
 
   [ "$status" -eq 0 ]
   grep -qF "httpProxy: 'http://127.0.0.1:7895' # previous endpoint" \
@@ -81,7 +81,7 @@ TOML
   local before
   before="$(sha256sum "$(pnpm_config_path)" | cut -d' ' -f1)"
 
-  run_proxy on pnpm
+  run_proxysw on pnpm
 
   [ "$status" -eq 0 ]
   [ "$(sha256sum "$(pnpm_config_path)" | cut -d' ' -f1)" = "$before" ]
@@ -89,13 +89,13 @@ TOML
 
 @test "repeated on is idempotent and creates no extra snapshot" {
   write_pnpm_off
-  run_proxy on pnpm
+  run_proxysw on pnpm
   [ "$status" -eq 0 ]
   local first_hash first_snapshots
   first_hash="$(sha256sum "$(pnpm_config_path)" | cut -d' ' -f1)"
   first_snapshots="$(proxy_snapshot_count)"
 
-  run_proxy on pnpm
+  run_proxysw on pnpm
 
   [ "$status" -eq 0 ]
   [ "$(sha256sum "$(pnpm_config_path)" | cut -d' ' -f1)" = "$first_hash" ]
@@ -107,11 +107,11 @@ TOML
   chmod 600 "$(pnpm_config_path)"
   cp "$(pnpm_config_path)" "$FIXTURE_ROOT/original"
 
-  run_proxy on pnpm
+  run_proxysw on pnpm
   [ "$status" -eq 0 ]
   grep -qF "httpProxy: 'http://127.0.0.1:7890'" "$(pnpm_config_path)"
 
-  run_proxy off pnpm
+  run_proxysw off pnpm
 
   [ "$status" -eq 0 ]
   ! grep -qE '^(httpProxy|httpsProxy|noProxy):' "$(pnpm_config_path)"
@@ -127,13 +127,13 @@ TOML
   write_pnpm_hand_edited
   cp "$(pnpm_config_path)" "$FIXTURE_ROOT/original"
 
-  run_proxy on pnpm
+  run_proxysw on pnpm
   [ "$status" -eq 0 ]
-  run_proxy off pnpm
+  run_proxysw off pnpm
   [ "$status" -eq 0 ]
   ! grep -qF 'httpProxy' "$(pnpm_config_path)"
 
-  run_proxy restore pnpm
+  run_proxysw restore pnpm
 
   [ "$status" -eq 0 ]
   cmp "$(pnpm_config_path)" "$FIXTURE_ROOT/original"
@@ -144,11 +144,11 @@ TOML
 @test "off removes the config file when it did not exist before on" {
   rm -f "$(pnpm_config_path)"
 
-  run_proxy on pnpm
+  run_proxysw on pnpm
   [ "$status" -eq 0 ]
   [ -f "$(pnpm_config_path)" ]
 
-  run_proxy off pnpm
+  run_proxysw off pnpm
 
   [ "$status" -eq 0 ]
   [ ! -e "$(pnpm_config_path)" ]
@@ -158,7 +158,7 @@ TOML
 @test "on creates a valid YAML file when the config is missing" {
   rm -f "$(pnpm_config_path)"
 
-  run_proxy on pnpm
+  run_proxysw on pnpm
 
   [ "$status" -eq 0 ]
   [ -f "$(pnpm_config_path)" ]
@@ -181,7 +181,7 @@ PY
   local before_nested after_nested
   before_nested="$(sed -n '/^packageExtensions:/,$p' "$(pnpm_config_path)")"
 
-  run_proxy on pnpm
+  run_proxysw on pnpm
 
   [ "$status" -eq 0 ]
   after_nested="$(sed -n '/^packageExtensions:/,$p' "$(pnpm_config_path)")"
@@ -192,7 +192,7 @@ PY
   printf '# pnpm settings\r\nstrictPeerDependencies: false\r\n' \
     > "$(pnpm_config_path)"
 
-  run_proxy on pnpm
+  run_proxysw on pnpm
 
   [ "$status" -eq 0 ]
   python3 - "$(pnpm_config_path)" <<'PY'
@@ -207,17 +207,17 @@ PY
 
 @test "status reports pnpm on after on and off after off" {
   write_pnpm_off
-  run_proxy on pnpm
+  run_proxysw on pnpm
   [ "$status" -eq 0 ]
 
-  run_proxy status
+  run_proxysw status
   [ "$status" -eq 0 ]
   assert_carrier_state pnpm on
 
-  run_proxy off pnpm
+  run_proxysw off pnpm
   [ "$status" -eq 0 ]
 
-  run_proxy status
+  run_proxysw status
   [ "$status" -eq 0 ]
   assert_carrier_state pnpm off
 }

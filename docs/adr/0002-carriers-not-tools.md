@@ -12,5 +12,5 @@
 ## Consequences
 
 - 切换 niri 环境块会同时影响 git 与 curl 等命令行工具和 GUI 应用，这是设计属性而非缺陷，文档与界面都要说清。
-- `docker` 不在受管载体内，v1 只读展示：需要 root，且改 `daemon.json` 后必须重启 daemon，会终止运行中的容器。若将来支持，必须是显式的 `proxy docker on|off` 并二次确认。
+- `docker` 不在受管载体内，v1 只读展示：需要 root，且改 `daemon.json` 后必须重启 daemon，会终止运行中的容器。若将来支持，必须是显式的 `proxysw docker on|off` 并二次确认。
 - `ssh` 是受管载体：只动 `~/.ssh/config` 中 github.com 主机块的 `ProxyCommand`，不碰其他 Host。`off` 后 GitHub SSH 将直连，而直连实测不可达，界面必须标出这一后果。

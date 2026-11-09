@@ -73,12 +73,20 @@ FlClash 之类的代理客户端，其「系统代理」开关在 Linux 上通�
 
 ## 安装
 
-需要 Linux + niri、Python 3.11+，以及可选的字面量工具 `niri`。
+需要 Linux + niri、Python 3.11+，以及可选的 `niri` 二进制（存在时工具会在写完配置后请它重新加载，不存在时只是给出提示，不影响开关本身）。
 
 ```bash
 git clone https://github.com/slowbyte-run/proxy-switcher
 cd proxy-switcher
 export PATH="$PWD/bin:$PATH"
+```
+
+命令名是 `proxysw` 而不是 `proxy`：发行版的 `libproxy` 包已经占用了 `/usr/bin/proxy`，叫 `proxy` 会让谁生效取决于 `PATH` 顺序，且误调用时不会报错。原因见 [ADR 0005](docs/adr/0005-command-name-is-proxysw.md)。
+
+想装到 `~/.local/bin` 时，符号链接即可，启动器会自己解析到仓库真实路径：
+
+```bash
+ln -s "$PWD/bin/proxysw" ~/.local/bin/proxysw
 ```
 
 无需构建、无需包管理器。运行测试需要 [bats](https://github.com/bats-core/bats-core) 与 PyYAML。
@@ -88,51 +96,51 @@ export PATH="$PWD/bin:$PATH"
 查看当前状态（只读，安全）：
 
 ```bash
-proxy status
+proxysw status
 ```
 
 先预览将要改动的文件：
 
 ```bash
-proxy --dry-run on
+proxysw --dry-run on
 ```
 
 开启全部载体，然后把状态注入当前 shell：
 
 ```bash
-proxy on
-eval "$(proxy env)"
+proxysw on
+eval "$(proxysw env)"
 ```
 
 关闭代理：
 
 ```bash
-proxy off
+proxysw off
 ```
 
 只切换 pnpm 或检查本地代理端口是否在监听：
 
 ```bash
-proxy toggle pnpm
-proxy status --check
+proxysw toggle pnpm
+proxysw status --check
 ```
 
 把文件恢复到第一次开关之前的原状：
 
 ```bash
-proxy restore
+proxysw restore
 ```
 
 ## 命令参考
 
 | 命令 | 说明 |
 | --- | --- |
-| `proxy on [载体...]` | 开启；不带载体则作用于全部受管载体 |
-| `proxy off [载体...]` | 渲染规范的无代理状态 |
-| `proxy toggle [载体...]` | 任一所选载体不是 `on` 时整体转 `on`，全为 `on` 时转 `off` |
-| `proxy restore [载体...]` | 按快照逐字节恢复；原文件本不存在则删除 |
-| `proxy status [--check] [--json]` | 查看状态；`--check` 探测端点端口，`--json` 输出机器可读结构 |
-| `proxy env [--json]` | 输出 `export` / `unset` 语句，供 `eval` 使用；`--json` 输出同一份决策的结构化形式 |
+| `proxysw on [载体...]` | 开启；不带载体则作用于全部受管载体 |
+| `proxysw off [载体...]` | 渲染规范的无代理状态 |
+| `proxysw toggle [载体...]` | 任一所选载体不是 `on` 时整体转 `on`，全为 `on` 时转 `off` |
+| `proxysw restore [载体...]` | 按快照逐字节恢复；原文件本不存在则删除 |
+| `proxysw status [--check] [--json] [--short] [--require-up]` | 查看状态；`--check` 探测端点端口，`--json` 输出机器可读结构，`--short` 只列载体与状态，`--require-up` 在端点不通时以退出码 1 结束 |
+| `proxysw env [--shell <name>] [--json]` | 输出 `export` / `unset` 语句供 `eval` 使用；`--shell` 选 bash、zsh 或 fish，`--json` 输出同一份决策的结构化形式 |
 
 | 选项 | 适用于 | 说明 |
 | --- | --- | --- |
@@ -141,11 +149,14 @@ proxy restore
 | `--dry-run` | 开关与恢复 | 只打印将改动的载体与文件，不写盘 |
 | `-v`, `--verbose` | 开关与恢复 | 逐载体说明做了什么 |
 | `--check` | `status` | 有界的本地 TCP 端口探测，不发起 HTTP 请求 |
+| `--short` | `status` | 只输出载体与状态两列，窄终端可用 |
+| `--require-up` | `status` | 端点不通时退出 1；隐含 `--check` |
+| `--shell <name>` | `env` | `bash`、`zsh` 或 `fish`；不指定时按 `$SHELL` 推断 |
 | `--json` | `status`、`env`、`--dry-run` | 机器可读输出，顶层带 `schema` 字段 |
 | `-V`, `--version` | 所有命令 | 打印版本并退出 |
 | `-h`, `--help` | 所有命令 | 帮助 |
 
-机器可读输出适用于状态栏与包装脚本：`proxy status --json` 给出各载体状态，`proxy --dry-run on --json` 给出完整的变更计划（含冲突与失败），两者顶层都有 `schema`，字段变更时会递增。本仓库暂不提供 TUI。
+机器可读输出适用于状态栏与包装脚本：`proxysw status --json` 给出各载体状态，`proxysw --dry-run on --json` 给出完整的变更计划（含冲突与失败），两者顶层都有 `schema`，字段变更时会递增。本仓库暂不提供 TUI。
 
 `off` 与 `restore` 的区别是刻意的：`off` 把配置渲染成「没有代理」，而 `restore` 才回滚到开关前的字节。原始文件本就可能含代理值，若 `off` 走回滚，「关闭」就会变成「把代理装回去」。设计取舍见 [ADR 0003](docs/adr/0003-off-renders-no-proxy-restore-recovers.md)。
 
@@ -172,6 +183,8 @@ exclude = ["ssh"]
 **niri**：只改 `environment {}` 内的六个代理键与 `NODE_USE_ENV_PROXY`，保留 `LANG`、`QT_QPA_PLATFORM` 等其余变量与注释。`off` 写 `null` 以显式移除；若 `on` 新建了该块，`off` 会把它移除。它影响 niri 直接 spawn 的进程（GUI 应用、终端窗口），git/curl 只有在不经过 shell rc 时才算在内。
 
 **shell**：维护一段带起止标记的片段。`on` 写六个 `export` 加 `export NODE_USE_ENV_PROXY=1`；`off` 写六个显式 `unset`，以便覆盖 niri 块。**`off` 不会 `unset` 这个 Node 开关**——它只是「允许 Node 读环境变量」，你可能在片段之外自己设置过，移除会静默覆盖你的写法。按 `$SHELL` 选择 `~/.zshrc` 或 `~/.bashrc`，其他 shell 回退到 zsh 配置。终端里的 git/curl 归它管。
+
+fish 不是受管载体（见 [ADR 0006](docs/adr/0006-fish-is-not-a-managed-carrier.md)）：fish 的 `config.fish` 没有「最后执行」的保证，写进去的片段很容易被用户自己的 `set` 覆盖。fish 用户改用 `eval (proxysw env --shell fish | string collect)` 把值加载进当前会话。
 
 **npm / pnpm**：分别写各自配置文件中的三个键。npm 保留 600 权限、替换已有键而不追加重复项；pnpm 采用行级编辑，保留注释、缩进与缩进风格。
 
@@ -206,12 +219,14 @@ bats --filter 'restore' tests/
 - 已在运行的进程不会热更新，只影响之后新启动的进程。
 - 从 DMS 启动器拉起的应用继承的是 DMS 启动时的环境，可能需要重启 DMS 才能看到新值。
 - 不写 `all_proxy` / `ALL_PROXY`，也不解析 FlClash 的私有配置。
+- fish 不是受管载体：`proxysw env --shell fish` 输出正确语法，但不会写入 `config.fish`。
+- 并发开关会排队（默认最多等 5 秒，超时退出 1），不会交错执行。
 - TUI 与状态栏插件尚未提供。
 
 ## 开发
 
 ```
-bin/proxy                 启动器，仅 exec Python 入口
+bin/proxysw               启动器，仅 exec Python 入口
 libexec/proxy_cli.py      唯一的参数解析与 usage
 libexec/proxy_engine.py   快照、冲突检测、原子写入、清单
 libexec/proxy_helper.py   配置、状态输出、env 与端口探测

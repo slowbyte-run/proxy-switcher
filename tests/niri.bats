@@ -15,7 +15,7 @@ setup() {
   local before_input after_input
   before_input="$(sed -n '/^input {/,$p' "$(niri_config_path)")"
 
-  run_proxy on niri
+  run_proxysw on niri
 
   [ "$status" -eq 0 ]
   after_input="$(sed -n '/^input {/,$p' "$(niri_config_path)")"
@@ -36,10 +36,10 @@ setup() {
 
 @test "off writes null for all six keys instead of deleting them" {
   write_niri_plain
-  run_proxy on niri
+  run_proxysw on niri
   [ "$status" -eq 0 ]
 
-  run_proxy off niri
+  run_proxysw off niri
 
   [ "$status" -eq 0 ]
   for key in $(proxy_keys); do
@@ -50,7 +50,7 @@ setup() {
   grep -qE '^[[:space:]]+NODE_USE_ENV_PROXY null$' "$(niri_config_path)"
   ! grep -q 'http://127.0.0.1:7890' "$(niri_config_path)"
 
-  run_proxy status
+  run_proxysw status
   [ "$status" -eq 0 ]
   assert_carrier_state niri off
 }
@@ -58,7 +58,7 @@ setup() {
 @test "on creates a valid environment block when the config has none" {
   write_niri_without_environment_block
 
-  run_proxy on niri
+  run_proxysw on niri
 
   [ "$status" -eq 0 ]
   grep -qE '^environment \{' "$(niri_config_path)"
@@ -68,7 +68,7 @@ setup() {
   grep -qF '// no environment block here' "$(niri_config_path)"
   grep -qF 'input {' "$(niri_config_path)"
 
-  run_proxy status
+  run_proxysw status
   [ "$status" -eq 0 ]
   assert_carrier_state niri on
 }
@@ -78,7 +78,7 @@ setup() {
   local before
   before="$(sha256sum "$(niri_config_path)" | cut -d' ' -f1)"
 
-  run_proxy on niri
+  run_proxysw on niri
 
   [ "$status" -eq 0 ]
   [ "$(sha256sum "$(niri_config_path)" | cut -d' ' -f1)" = "$before" ]
@@ -86,14 +86,14 @@ setup() {
 
 @test "repeated on is idempotent and creates no extra snapshot" {
   write_niri_plain
-  run_proxy on niri
+  run_proxysw on niri
   [ "$status" -eq 0 ]
   local first_hash first_snapshots
   first_hash="$(sha256sum "$(niri_config_path)" | cut -d' ' -f1)"
   first_snapshots="$(proxy_snapshot_count)"
   [ "$first_snapshots" -eq 1 ]
 
-  run_proxy on niri
+  run_proxysw on niri
 
   [ "$status" -eq 0 ]
   [ "$(sha256sum "$(niri_config_path)" | cut -d' ' -f1)" = "$first_hash" ]
@@ -105,7 +105,7 @@ setup() {
   local original_hash written_hash snapshot
   original_hash="sha256:$(sha256sum "$(niri_config_path)" | cut -d' ' -f1)"
 
-  run_proxy on niri
+  run_proxysw on niri
   [ "$status" -eq 0 ]
 
   written_hash="sha256:$(sha256sum "$(niri_config_path)" | cut -d' ' -f1)"
@@ -123,7 +123,7 @@ setup() {
 @test "the manifest records a missing original file as absent" {
   rm -f "$(niri_config_path)"
 
-  run_proxy on niri
+  run_proxysw on niri
 
   [ "$status" -eq 0 ]
   [ -f "$(niri_config_path)" ]
@@ -134,13 +134,13 @@ setup() {
 
 @test "off refuses to overwrite an externally modified file with exit code 1" {
   write_niri_plain
-  run_proxy on niri
+  run_proxysw on niri
   [ "$status" -eq 0 ]
   printf '\n// edited by hand\n' >> "$(niri_config_path)"
   local before
   before="$(sha256sum "$(niri_config_path)" | cut -d' ' -f1)"
 
-  run_proxy off niri
+  run_proxysw off niri
 
   [ "$status" -eq 1 ]
   [[ "$output" == *"$(niri_config_path)"* ]]
@@ -150,11 +150,11 @@ setup() {
 
 @test "--force completes a switch over an externally modified file" {
   write_niri_plain
-  run_proxy on niri
+  run_proxysw on niri
   [ "$status" -eq 0 ]
   printf '\n// edited by hand\n' >> "$(niri_config_path)"
 
-  run_proxy off niri --force
+  run_proxysw off niri --force
 
   [ "$status" -eq 0 ]
   for key in $(proxy_keys); do
@@ -166,7 +166,7 @@ setup() {
 @test "a successful on asks niri to load the config exactly once" {
   write_niri_plain
 
-  run_proxy on niri
+  run_proxysw on niri
 
   [ "$status" -eq 0 ]
   [ -f "$NIRI_STUB_LOG" ]
@@ -182,7 +182,7 @@ setup() {
   ln -s "$(command -v python3)" "$FIXTURE_ROOT/no-niri-bin/python3"
   ln -s "$(command -v dirname)" "$FIXTURE_ROOT/no-niri-bin/dirname"
 
-  run env PATH="$FIXTURE_ROOT/no-niri-bin" "$PROXY_BIN" on niri
+  run env PATH="$FIXTURE_ROOT/no-niri-bin" "$PROXYSW_BIN" on niri
 
   [ "$status" -eq 0 ]
   [[ "$output" == *"warning"* ]]
@@ -202,7 +202,7 @@ exit 1
 STUB
   chmod +x "$FIXTURE_ROOT/bin/niri"
 
-  run_proxy on niri
+  run_proxysw on niri
 
   [ "$status" -eq 0 ]
   [ "$(wc -l < "$NIRI_STUB_LOG")" -eq 1 ]
@@ -214,27 +214,27 @@ STUB
   write_niri_plain
   chmod 600 "$(niri_config_path)"
 
-  run_proxy on niri
+  run_proxysw on niri
 
   [ "$status" -eq 0 ]
   [ "$(stat -c '%a' "$(niri_config_path)")" = "600" ]
 
-  run_proxy off niri
+  run_proxysw off niri
   [ "$status" -eq 0 ]
   [ "$(stat -c '%a' "$(niri_config_path)")" = "600" ]
 }
 
 @test "repeated off is idempotent and creates no extra snapshot" {
   write_niri_plain
-  run_proxy on niri
+  run_proxysw on niri
   [ "$status" -eq 0 ]
-  run_proxy off niri
+  run_proxysw off niri
   [ "$status" -eq 0 ]
   local first_hash first_snapshots
   first_hash="$(sha256sum "$(niri_config_path)" | cut -d' ' -f1)"
   first_snapshots="$(proxy_snapshot_count)"
 
-  run_proxy off niri
+  run_proxysw off niri
 
   [ "$status" -eq 0 ]
   [ "$(sha256sum "$(niri_config_path)" | cut -d' ' -f1)" = "$first_hash" ]
@@ -246,7 +246,7 @@ STUB
   local before
   before="$(snapshot_tree "$HOME" "$XDG_STATE_HOME")"
 
-  run_proxy on niri --dry-run
+  run_proxysw on niri --dry-run
 
   [ "$status" -eq 0 ]
   [[ "$output" == *"would"* ]]
@@ -257,10 +257,10 @@ STUB
 @test "on without a carrier name switches every managed carrier" {
   write_niri_plain
 
-  run_proxy on
+  run_proxysw on
 
   [ "$status" -eq 0 ]
-  run_proxy status
+  run_proxysw status
   assert_carrier_state niri on
 }
 
@@ -271,7 +271,7 @@ endpoint = "http://127.0.0.1:7895"
 no_proxy = "localhost,example.test"
 TOML
 
-  run_proxy on niri
+  run_proxysw on niri
 
   [ "$status" -eq 0 ]
   grep -qF 'http_proxy "http://127.0.0.1:7895"' "$(niri_config_path)"
@@ -282,7 +282,7 @@ TOML
 @test "global options are accepted before the command" {
   write_niri_plain
 
-  run_proxy --proxy http://127.0.0.1:7999 on niri
+  run_proxysw --proxy http://127.0.0.1:7999 on niri
 
   [ "$status" -eq 0 ]
   grep -qF 'http_proxy "http://127.0.0.1:7999"' "$(niri_config_path)"
@@ -291,7 +291,7 @@ TOML
 @test "off does not create a config file when none existed" {
   rm -f "$(niri_config_path)"
 
-  run_proxy off niri
+  run_proxysw off niri
 
   [ "$status" -eq 0 ]
   [ ! -e "$(niri_config_path)" ]
@@ -302,11 +302,11 @@ TOML
   write_niri_without_environment_block
   cp -p "$(niri_config_path)" "$FIXTURE_ROOT/original"
 
-  run_proxy on niri
+  run_proxysw on niri
   [ "$status" -eq 0 ]
   grep -qE '^environment \{' "$(niri_config_path)"
 
-  run_proxy off niri
+  run_proxysw off niri
   [ "$status" -eq 0 ]
 
   cmp "$(niri_config_path)" "$FIXTURE_ROOT/original"
@@ -319,11 +319,11 @@ TOML
 @test "off removes a config file that on created" {
   rm -f "$(niri_config_path)"
 
-  run_proxy on niri
+  run_proxysw on niri
   [ "$status" -eq 0 ]
   [ -f "$(niri_config_path)" ]
 
-  run_proxy off niri
+  run_proxysw off niri
   [ "$status" -eq 0 ]
   [ ! -e "$(niri_config_path)" ]
 }
@@ -333,18 +333,18 @@ TOML
   local before
   before="$(sha256sum "$(niri_config_path)" | cut -d' ' -f1)"
 
-  run_proxy off niri
+  run_proxysw off niri
 
   [ "$status" -eq 0 ]
   [ "$(sha256sum "$(niri_config_path)" | cut -d' ' -f1)" = "$before" ]
 }
 
 @test "unknown carriers and unmanaged carriers are usage errors" {
-  run_proxy on nope
+  run_proxysw on nope
   [ "$status" -eq 2 ]
   [[ "$output" == *"unknown carrier"* ]]
 
-  run_proxy on docker
+  run_proxysw on docker
   [ "$status" -eq 2 ]
   [[ "$output" == *"read-only"* ]]
 }
@@ -352,7 +352,7 @@ TOML
 @test "commented and slashdashed proxy entries are left untouched" {
   write_niri_commented_proxies
 
-  run_proxy on niri
+  run_proxysw on niri
 
   [ "$status" -eq 0 ]
   grep -qF '// http_proxy "http://127.0.0.1:7890"' "$(niri_config_path)"
@@ -372,10 +372,10 @@ echo "no compositor" >&2
 exit 1
 STUB
   chmod +x "$FIXTURE_ROOT/bin/niri"
-  run_proxy on niri
+  run_proxysw on niri
   [ "$status" -eq 0 ]
 
-  run_proxy status
+  run_proxysw status
 
   [ "$status" -eq 0 ]
   assert_carrier_state niri on
@@ -385,10 +385,10 @@ STUB
 @test "status stays quiet when every write reloaded cleanly" {
   write_niri_plain
 
-  run_proxy on niri
+  run_proxysw on niri
   [ "$status" -eq 0 ]
 
-  run_proxy status
+  run_proxysw status
 
   [ "$status" -eq 0 ]
   [[ "$output" != *"not reloaded"* ]]
@@ -398,7 +398,7 @@ STUB
   mkdir -p "$(proxy_state_root)"
   printf 'not json' > "$(proxy_manifest_path)"
 
-  run_proxy status
+  run_proxysw status
 
   [ "$status" -eq 0 ]
   assert_carrier_state docker unmanaged

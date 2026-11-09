@@ -31,7 +31,7 @@ SH
   awk 'seen {print} /^# <<< proxy-switcher <<<$/{seen=1}' \
     "$(shell_rc_path)" > "$BATS_TEST_TMPDIR/suffix.before"
 
-  run_proxy on shell
+  run_proxysw on shell
 
   [ "$status" -eq 0 ]
   for key in $(proxy_keys); do
@@ -53,7 +53,7 @@ SH
   grep -qF '# after marker' "$(shell_rc_path)"
   grep -qF 'export AFTER_MARKER=2' "$(shell_rc_path)"
 
-  run_proxy status
+  run_proxysw status
   [ "$status" -eq 0 ]
   assert_carrier_state shell on
 }
@@ -62,7 +62,7 @@ SH
   write_shell_raw_exports
   cp "$(shell_rc_path)" "$BATS_TEST_TMPDIR/rc.before"
 
-  run_proxy on shell
+  run_proxysw on shell
 
   [ "$status" -eq 0 ]
   [ "$(grep -c '^# >>> proxy-switcher >>>$' "$(shell_rc_path)")" -eq 1 ]
@@ -78,7 +78,7 @@ SH
 @test "off writes six explicit unsets and keeps the snippet" {
   write_shell_on
 
-  run_proxy off shell
+  run_proxysw off shell
 
   [ "$status" -eq 0 ]
   [ "$(grep -c '^# >>> proxy-switcher >>>$' "$(shell_rc_path)")" -eq 1 ]
@@ -91,21 +91,21 @@ SH
     "$(shell_rc_path)"
   ! grep -qE '^unset NODE_USE_ENV_PROXY$' "$(shell_rc_path)"
 
-  run_proxy status
+  run_proxysw status
   [ "$status" -eq 0 ]
   assert_carrier_state shell off
 }
 
 @test "repeated on is idempotent and creates no extra snapshot" {
   write_shell_raw_exports
-  run_proxy on shell
+  run_proxysw on shell
   [ "$status" -eq 0 ]
   local first_hash first_snapshots
   first_hash="$(sha256sum "$(shell_rc_path)" | cut -d' ' -f1)"
   first_snapshots="$(proxy_snapshot_count)"
   [ "$first_snapshots" -eq 1 ]
 
-  run_proxy on shell
+  run_proxysw on shell
 
   [ "$status" -eq 0 ]
   [ "$(sha256sum "$(shell_rc_path)" | cut -d' ' -f1)" = "$first_hash" ]
@@ -115,13 +115,13 @@ SH
 
 @test "repeated off is idempotent and creates no extra snapshot" {
   write_shell_on
-  run_proxy off shell
+  run_proxysw off shell
   [ "$status" -eq 0 ]
   local first_hash first_snapshots
   first_hash="$(sha256sum "$(shell_rc_path)" | cut -d' ' -f1)"
   first_snapshots="$(proxy_snapshot_count)"
 
-  run_proxy off shell
+  run_proxysw off shell
 
   [ "$status" -eq 0 ]
   [ "$(sha256sum "$(shell_rc_path)" | cut -d' ' -f1)" = "$first_hash" ]
@@ -131,7 +131,7 @@ SH
 @test "on creates a missing rc file and says so" {
   rm -f "$(shell_rc_path)"
 
-  run_proxy on shell
+  run_proxysw on shell
 
   [ "$status" -eq 0 ]
   [ -f "$(shell_rc_path)" ]
@@ -141,7 +141,7 @@ SH
     grep -qE "^export ${key}=\"" "$(shell_rc_path)"
   done
 
-  run_proxy status
+  run_proxysw status
   [ "$status" -eq 0 ]
   assert_carrier_state shell on
 }
@@ -149,7 +149,7 @@ SH
 @test "the manifest records a missing original rc file as absent" {
   rm -f "$(shell_rc_path)"
 
-  run_proxy on shell
+  run_proxysw on shell
 
   [ "$status" -eq 0 ]
   [ "$(jq -r '.carriers.shell.original_existed' "$(proxy_manifest_path)")" = "false" ]
@@ -159,13 +159,13 @@ SH
 
 @test "off refuses to overwrite an externally modified rc file with exit code 1" {
   write_shell_on
-  run_proxy on shell
+  run_proxysw on shell
   [ "$status" -eq 0 ]
   printf '\n# edited by hand\n' >> "$(shell_rc_path)"
   local before
   before="$(sha256sum "$(shell_rc_path)" | cut -d' ' -f1)"
 
-  run_proxy off shell
+  run_proxysw off shell
 
   [ "$status" -eq 1 ]
   [[ "$output" == *"$(shell_rc_path)"* ]]
@@ -175,11 +175,11 @@ SH
 
 @test "--force completes a switch over an externally modified rc file" {
   write_shell_on
-  run_proxy on shell
+  run_proxysw on shell
   [ "$status" -eq 0 ]
   printf '\n# edited by hand\n' >> "$(shell_rc_path)"
 
-  run_proxy off shell --force
+  run_proxysw off shell --force
 
   [ "$status" -eq 0 ]
   grep -qF '# edited by hand' "$(shell_rc_path)"
@@ -190,11 +190,11 @@ SH
 
 @test "an interactive shell ends up without proxy variables when niri is on and shell is off" {
   write_niri_plain
-  run_proxy on niri
+  run_proxysw on niri
   [ "$status" -eq 0 ]
-  run_proxy on shell
+  run_proxysw on shell
   [ "$status" -eq 0 ]
-  run_proxy off shell
+  run_proxysw off shell
   [ "$status" -eq 0 ]
 
   local leftover
@@ -219,7 +219,7 @@ SH
 
 @test "an interactive shell still sees niri's values when the shell carrier has not run" {
   write_niri_plain
-  run_proxy on niri
+  run_proxysw on niri
   [ "$status" -eq 0 ]
 
   local leftover
@@ -241,7 +241,7 @@ endpoint = "http://127.0.0.1:7895"
 no_proxy = "localhost,example.test"
 TOML
 
-  run_proxy on shell
+  run_proxysw on shell
 
   [ "$status" -eq 0 ]
   grep -qF 'export http_proxy="http://127.0.0.1:7895"' "$(shell_rc_path)"
@@ -253,11 +253,11 @@ TOML
   write_shell_raw_exports
   chmod 600 "$(shell_rc_path)"
 
-  run_proxy on shell
+  run_proxysw on shell
   [ "$status" -eq 0 ]
   [ "$(stat -c '%a' "$(shell_rc_path)")" = "600" ]
 
-  run_proxy off shell
+  run_proxysw off shell
   [ "$status" -eq 0 ]
   [ "$(stat -c '%a' "$(shell_rc_path)")" = "600" ]
 }
@@ -267,7 +267,7 @@ TOML
   local before
   before="$(sha256sum "$(shell_rc_path)" | cut -d' ' -f1)"
 
-  run_proxy on shell
+  run_proxysw on shell
 
   [ "$status" -eq 0 ]
   [ "$(sha256sum "$(shell_rc_path)" | cut -d' ' -f1)" = "$before" ]
@@ -278,7 +278,7 @@ TOML
   export SHELL
   rm -f "$HOME/.bashrc" "$HOME/.zshrc"
 
-  run_proxy on shell
+  run_proxysw on shell
 
   [ "$status" -eq 0 ]
   [ -f "$HOME/.bashrc" ]
@@ -287,7 +287,7 @@ TOML
     grep -qE "^export ${key}=\"" "$HOME/.bashrc"
   done
 
-  run_proxy status
+  run_proxysw status
   [ "$status" -eq 0 ]
   [[ "$output" == *"$HOME/.bashrc"* ]]
 }
@@ -297,7 +297,7 @@ TOML
   export SHELL
   rm -f "$HOME/.bashrc" "$HOME/.zshrc"
 
-  run_proxy on shell
+  run_proxysw on shell
 
   [ "$status" -eq 0 ]
   [ -f "$HOME/.zshrc" ]
@@ -308,7 +308,7 @@ TOML
   unset SHELL
   rm -f "$HOME/.bashrc" "$HOME/.zshrc"
 
-  run_proxy on shell
+  run_proxysw on shell
 
   [ "$status" -eq 0 ]
   [ -f "$HOME/.zshrc" ]

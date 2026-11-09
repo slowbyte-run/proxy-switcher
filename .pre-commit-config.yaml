@@ -19,7 +19,7 @@ repos:
     hooks:
       - id: shellcheck
         args: [-x]
-        files: '^(bin/proxy|tests/.*\.bash)$'
+        files: '^(bin/proxysw|tests/.*\.bash)$'
 
   # The test suite is the only gate; nothing else proves the carriers still
   # write the bytes they promise. Plain `bats` (no --jobs) keeps the hook free
