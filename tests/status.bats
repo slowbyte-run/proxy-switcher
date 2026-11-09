@@ -351,7 +351,7 @@ TOML
   run_proxysw status --json
 
   [ "$status" -eq 0 ]
-  [ "$(printf '%s\n' "$output" | jq -r .schema)" = "1" ]
+  [ "$(printf '%s\n' "$output" | jq -r .schema)" = "2" ]
 }
 
 @test "--version prints the version and exits 0 without touching a carrier" {

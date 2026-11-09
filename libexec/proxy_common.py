@@ -31,7 +31,11 @@ NODE_FETCH_VALUE = "1"
 
 # Bumped whenever a `--json` document gains, loses or renames a field. Scripts
 # and status-bar widgets compare this before trusting the rest of the document.
-JSON_SCHEMA = 1
+#
+# 2: switch documents gained ``written`` and ``pending_reload``; ``dry_run``
+#    became false for an executing switch; ``status`` carrier rows gained
+#    ``pending_reload``.
+JSON_SCHEMA = 2
 
 # Printed by `proxysw --version`; keep in step with the README badge.
 VERSION = "0.1.0"

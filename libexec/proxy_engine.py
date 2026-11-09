@@ -67,6 +67,24 @@ class Context:
     def warn(self, message: str) -> None:
         print(f"proxysw: warning: {message}", file=sys.stderr)
 
+    def info(self, message: str) -> None:
+        """Progress detail about a carrier's file.
+
+        It goes to stderr because stdout belongs to the command's result: a
+        ``--json`` document must stay parseable even when a carrier creates a
+        file or warns about the world outside it.
+        """
+        print(message, file=sys.stderr)
+
+    def progress(self, message: str) -> None:
+        """A human-facing result line.
+
+        Silent under ``--json``: the document on stdout already carries the same
+        facts, and a caller parsing it should not also have to drain prose.
+        """
+        if not self.json:
+            print(message)
+
 
 @dataclass
 class Plan:
@@ -81,6 +99,10 @@ class Plan:
     changed: bool
     original_existed: bool
     warning: str = ""
+    # Filled in by ``_apply_plan`` once a real switch runs. A dry run never
+    # reaches that function, so both stay false and the document says so.
+    written: bool = False
+    pending_reload: bool = False
 
 
 def hash_bytes(data: bytes | None) -> str | None:
@@ -436,14 +458,17 @@ def plan_document(
     skipped: list[str],
     unstarted: list[str],
 ) -> dict:
-    """The machine-readable form of a dry run.
+    """The machine-readable form of a switch.
 
     Carries the same decisions the human output prints, so a TUI, an fzf
-    wrapper or a status-bar widget can preview a switch without parsing text.
+    wrapper or a status-bar widget can preview or apply a switch without
+    parsing text. ``dry_run`` says which of the two it was; every ``state`` is
+    the state on disk when the command finished, and ``written`` and
+    ``pending_reload`` report what this run actually did.
     """
     return {
         "schema": JSON_SCHEMA,
-        "dry_run": True,
+        "dry_run": context.dry_run,
         "action": action.value,
         "endpoint": context.endpoint,
         "no_proxy": context.no_proxy,
@@ -454,6 +479,8 @@ def plan_document(
                 "state": plan.carrier.read_state(plan.path),
                 "action": action.value,
                 "changed": plan.changed,
+                "written": plan.written,
+                "pending_reload": plan.pending_reload,
                 "exists": plan.current is not None,
                 "warning": plan.warning,
             }
@@ -472,6 +499,11 @@ def plan_document(
         ],
         "failures": [{"carrier": name, "error": message} for name, message in failures],
     }
+
+
+def emit_document(document: dict) -> None:
+    """Print one JSON document on stdout, and nothing else."""
+    print(json.dumps(document, ensure_ascii=False, indent=2))
 
 
 def _write_mode(plan: Plan, action: Action) -> int:
@@ -522,29 +554,33 @@ def _apply_plan(context: Context, manifest: dict, action: Action, plan: Plan) ->
     if context.verbose:
         if plan.changed:
             if plan.wanted is None:
-                print(f"proxysw: {plan.name}: removed {plan.path}")
+                context.progress(f"proxysw: {plan.name}: removed {plan.path}")
             else:
                 written = f"proxysw: {plan.name}: wrote {plan.path}"
-                print(f"{written} ({len(plan.wanted)} bytes)")
+                context.progress(f"{written} ({len(plan.wanted)} bytes)")
             if new_entry:
                 if snapshot_file is None:
-                    print(f"proxysw: {plan.name}: no snapshot (file was absent)")
+                    context.progress(
+                        f"proxysw: {plan.name}: no snapshot (file was absent)"
+                    )
                 else:
-                    print(f"proxysw: {plan.name}: snapshot {snapshot_file}")
+                    context.progress(f"proxysw: {plan.name}: snapshot {snapshot_file}")
         else:
-            print(f"proxysw: {plan.name}: no change to {plan.path}")
+            context.progress(f"proxysw: {plan.name}: no change to {plan.path}")
 
+    plan.written = wrote
     if wrote:
-        print(f"{plan.name}: {_display_action(action)}")
+        context.progress(f"{plan.name}: {_display_action(action)}")
         if plan.carrier.after_write is not None:
             try:
                 reloaded = plan.carrier.after_write(context)
             except Exception as error:  # noqa: BLE001 - report, do not abort
                 context.warn(f"{plan.name}: post-write hook failed: {error}")
                 reloaded = False
-            entry["pending_reload"] = not reloaded
+            plan.pending_reload = not reloaded
+            entry["pending_reload"] = plan.pending_reload
     else:
-        print(f"{plan.name}: already {_display_action(action)}")
+        context.progress(f"{plan.name}: already {_display_action(action)}")
 
     return wrote or new_entry
 
@@ -639,18 +675,11 @@ def switch(
     context: Context, action: Action, names: list[str], explicit: bool = True
 ) -> int:
     selected, skipped = select_carriers(context, names)
-    if not context.json:
-        for name in skipped:
-            print(f"{name}: skipped (excluded by configuration)")
+    for name in skipped:
+        context.progress(f"{name}: skipped (excluded by configuration)")
     if not selected:
         if context.json:
-            print(
-                json.dumps(
-                    plan_document(context, action, [], [], [], skipped, []),
-                    ensure_ascii=False,
-                    indent=2,
-                )
-            )
+            emit_document(plan_document(context, action, [], [], [], skipped, []))
         return 0
 
     if context.dry_run:
@@ -677,44 +706,48 @@ def _switch(
         context, effective, selected, entries, explicit
     )
 
-    if context.json:
-        # A JSON plan owns stdout; the caller reads conflicts and failures out
-        # of the document instead of scraping messages. Only reachable with
-        # --dry-run, enforced by the CLI.
-        print(
-            json.dumps(
+    def emit() -> None:
+        """Print the document for this run, if one was asked for.
+
+        Every exit path calls this, so the shape of `proxysw on --json` is the
+        same whether it succeeded, was blocked by a conflict, or partially
+        failed: only the ``failures`` and ``conflicts`` arrays differ.
+        """
+        if context.json:
+            emit_document(
                 plan_document(
                     context, effective, plans, conflicts, failures, skipped, unstarted
-                ),
-                ensure_ascii=False,
-                indent=2,
+                )
             )
-        )
-        blocked = bool(conflicts) and not context.force
-        return 1 if blocked or failures else 0
 
     for name in unstarted:
-        print(f"{name}: nothing to restore (no snapshot)")
+        context.progress(f"{name}: nothing to restore (no snapshot)")
 
+    blocked = bool(conflicts) and not context.force
     if conflicts:
         report_conflicts(conflicts)
-        if not context.force:
+        if blocked:
             report_failures(failures)
             print(
                 "proxysw: no carriers were changed because of the conflict(s)",
                 file=sys.stderr,
             )
+            emit()
             return 1
 
     if context.dry_run:
         for plan in plans:
             if plan.changed:
                 if effective is Action.RESTORE:
-                    print(f"{plan.name}: would restore {plan.path}")
+                    context.progress(f"{plan.name}: would restore {plan.path}")
                 else:
-                    print(f"{plan.name}: would turn {effective.value} {plan.path}")
+                    context.progress(
+                        f"{plan.name}: would turn {effective.value} {plan.path}"
+                    )
             else:
-                print(f"{plan.name}: already {_display_action(effective)} {plan.path}")
+                context.progress(
+                    f"{plan.name}: already {_display_action(effective)} {plan.path}"
+                )
         if failures:
             report_failures(failures)
             not_changed = ", ".join(name for name, _ in failures) or "none"
@@ -722,7 +755,9 @@ def _switch(
                 f"proxysw: partial completion: changed none; not changed {not_changed}",
                 file=sys.stderr,
             )
+            emit()
             return 1
+        emit()
         return 0
 
     manifest_dirty = False
@@ -761,6 +796,8 @@ def _switch(
             f"not changed {failed_text}",
             file=sys.stderr,
         )
+        emit()
         return 1
 
+    emit()
     return 0

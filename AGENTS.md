@@ -18,49 +18,49 @@ Single-context: root `GLOSSARY.md` plus `docs/adr/`. See `docs/agents/domain.md`
 
 `bin/proxysw` switches HTTP/HTTPS proxy settings for five "carriers" in a niri session: the niri `environment {}` block, a shell rc snippet, `~/.npmrc`, pnpm's `config.yaml`, and the `github.com` block in `~/.ssh/config`. docker is shown read-only.
 
-No build, no package manager. Python 3.11+ (uses `tomllib`); PyYAML is a test dependency for the pnpm assertions. The gate is `bats tests/` plus `ruff` and `shellcheck`; `.pre-commit-config.yaml` and `.github/workflows/test.yml` both run all three.
+No build, no package manager. Python 3.11+ (uses `tomllib`); PyYAML is a test dependency for the pnpm assertions. `./scripts/check` is the gate — `ruff`, `shellcheck` and `bats tests/` — and it pins the same tool versions as `.pre-commit-config.yaml`. CI runs the same three tools as separate steps; change a version in all three places or none.
 
 ## Commands
 
+- `./scripts/check` — the gate: `ruff` (check + format), `shellcheck`, then `bats tests/`. Run this before saying a change is done.
+- `./scripts/check lint` — style only, ~0.2s; `PROXYSW_CHECK_JOBS=8 ./scripts/check` — parallel suite locally
+- `bats tests/niri.bats` — one carrier; `bats --filter 'pattern' tests/` — one test
 - `./bin/proxysw status` — read-only, safe to run on the real machine
 - `./bin/proxysw on|off|toggle|restore|env [carrier...]`
-- `bats tests/` — full suite, the main gate (`bats --jobs 4` locally when `flock` exists; CI and pre-commit use plain `bats`)
-- `bats tests/niri.bats` — one carrier; `bats --filter 'pattern' tests/` — one test
-- `uvx ruff check libexec && uvx ruff format --check libexec` — style gate
-- `shellcheck -x bin/proxysw tests/helpers/fixture.bash` — shell gate
 
-`on`/`off`/`restore` write real files. Use `--dry-run` before touching the live config; add `--json` for a machine-readable plan.## Architecture
+`on`/`off`/`restore` write real files. Use `--dry-run` before touching the live config. Add `--json` for a machine-readable document; the executing command and the dry run return the same shape, told apart by `dry_run`.
+
+## Architecture
 
 - `bin/proxysw` is a thin bash launcher: it resolves its own symlinks, then `exec`s `libexec/proxy_cli.py`. The Python file owns usage text and argument parsing. `tests/contract.bats` fails if the launcher grows a parser or the argument count bound.
 - `libexec/` is implicitly on `sys.path` (script directory), so modules use flat imports (`import proxy_engine`, `from carriers import ...`); carrier modules use relative imports (`from .model import Carrier`). Keep `libexec` out of package form and skip path hacks.
 - `proxy_engine.py` owns snapshots, conflict detection, atomic writes and the manifest. Carriers resolve a path, render bytes, and may declare `check_rendered` (a warning about the world outside the file, e.g. ssh's `ncat`).
+- One switch runs in this order, and the order is the contract: `switch` → `select_carriers` → [`state_lock`] → `_switch` → `resolve_action` → `load_manifest` → `build_plans` → `_apply_plan` per carrier → `save_manifest`. `--dry-run` takes no lock and stops after `build_plans`. It is the largest file in `libexec/`; read that sequence before editing it, because a change in the wrong stage silently breaks the transaction.
+- Three output channels, and mixing them breaks `--json`: `context.info` (progress detail, always stderr), `context.progress` (human result lines, silent under `--json`), `emit_document` (the one JSON document on stdout). A carrier or a report function that calls bare `print` corrupts the document — `tests/contract.bats` fails on that in `carriers/`.
 - Adding a carrier: create `libexec/carriers/<name>.py` exporting `CARRIER = Carrier(...)`, then append the module name to `MODULES` in `carriers/__init__.py`. `tests/contract.bats` checks the registry and the directory agree in both directions.
 - Config: `$XDG_CONFIG_HOME/proxy-switcher/config.toml` with `endpoint`, `no_proxy`, `exclude`. State: `$XDG_STATE_HOME/proxy-switcher/manifest.json`.
-- Every `--json` document carries `schema` (`proxy_common.JSON_SCHEMA`); bump it when a field is added, removed or renamed. Status-bar widgets and TUI wrappers depend on it.
+- Every `--json` document carries `schema` (`proxy_common.JSON_SCHEMA`); bump it when a field is added, removed or renamed. Status-bar widgets and TUI wrappers depend on it. `tests/schema.bats` pins the field set of each document and fails unless the code, the snapshot and the number agree — so a forgotten bump cannot pass.
 - A switch is one locked transaction: `proxy_engine.state_lock` takes a global `flock` *before* `load_manifest` and holds it through `save_manifest`. The lock file lives in `$XDG_RUNTIME_DIR` (temp-dir fallback), never in the state directory — `--dry-run` and a no-op `restore` must leave that directory untouched. See ADR 0007.
 - `env` renders three dialects: bash/zsh share POSIX `export`/`unset`, fish needs `set -gx`/`set -e`. An unsupported `$SHELL` is a usage error rather than a silent zsh guess. fish is not a managed carrier. See ADR 0006.
 
-## Semantics that are easy to break
+## Before changing how a carrier renders or how a switch commits
 
-- `off` renders the canonical no-proxy state (niri `null`, shell explicit `unset`, ssh `ProxyCommand none`, npm/pnpm remove their keys). It does **not** restore the snapshot; `restore` does. This is deliberate — see ADR 0003. Do not "fix" `off` into a snapshot restore.
-- `off` must never create a file or block that did not exist. `Carrier.delete_created_file` handles this; the shell rc is the deliberate exception because its `unset` lines are what override the niri block.
-- The six proxy variables, their value mapping, line-ending detection and quoting live in `proxy_common.py`. `tests/contract.bats` fails on a carrier that spells a variable name out.
-- `NODE_USE_ENV_PROXY` is an enabler, not a proxy value: `on` writes it to both env carriers, `off` removes it only from the niri block and never unsets it in the shell snippet (that would clobber a hand-written line). It never affects carrier state. See ADR 0004.
-- Edit niri KDL through `libexec/kdl.py`; it preserves comments and offsets. Do not regex the config.
-- pnpm's YAML is edited line by line on purpose: a PyYAML round-trip drops comments and reflows the file. Do not simplify it into a parser round-trip.
-- npm must preserve mode 0600 and replace existing keys in place instead of appending duplicates.
-- ssh must leave every other Host block byte-identical. Tests assert `ssh -G -F <fixture>` because `ssh -G` ignores `$HOME`.
-- A newer manifest (`version` above `MANIFEST_VERSION`) is refused with exit 1 rather than rewritten; `status` degrades to "nothing pending" instead of failing, because it is a read-only view.
+`CODING_STANDARDS.md` holds the behaviours that look wrong until you know what
+they protect: why `off` renders instead of restoring, why pnpm's YAML is not
+parsed and niri's KDL is not regexed, why fish is refused as a carrier, and which
+architectural boundaries a diff must not cross. It also lists what the suite
+already enforces, so a reviewer can skip re-checking those by eye.
 
 ## Testing
 
-- Every bats test must call `fixture_init`. It points `HOME`, `XDG_CONFIG_HOME` and `XDG_STATE_HOME` at `$BATS_TEST_TMPDIR` and puts a stub `niri` first on `PATH`.
+- Every bats test must call `fixture_init`. It points `HOME`, `XDG_CONFIG_HOME`, `XDG_STATE_HOME` and `XDG_RUNTIME_DIR` at `$BATS_TEST_TMPDIR`, pins `SHELL=/bin/zsh`, puts a stub `niri` first on `PATH`, and exports `PROXYSW_BIN`.
 - Tests stay offline, avoid sudo, and touch only the fixture tree.
-- Use the fixture's `run_proxysw` helper; shared helpers live in `tests/helpers/fixture.bash`.
-- Add per-carrier tests in `tests/<carrier>.bats` and cross-carrier behaviour in `tests/aggregate.bats`. Launch/install behaviour goes in `tests/launcher.bats`; architecture rules go in `tests/contract.bats`.
+- Add per-carrier tests in `tests/<carrier>.bats` and cross-carrier behaviour in `tests/aggregate.bats`. Launch/install behaviour goes in `tests/launcher.bats`; architecture rules go in `tests/contract.bats`; the `--json` field snapshots go in `tests/schema.bats`; the switch lock goes in `tests/lock.bats`; the endpoint probe goes in `tests/check.bats`.
+- `run_proxysw` is `run`, which merges stderr into `$output`. When a test asserts on a `--json` document, capture stdout alone (`run bash -c '"$PROXYSW_BIN" ... 2>/dev/null'`) — otherwise a stray note makes `jq` fail and the assertion stops meaning what it says.
 
 ## Conventions
 
 - Exit codes: `0` success, `1` conflict or execution failure, `2` usage error.
 - Code and code comments are English; docs, commit messages and issue text are Chinese.
+- Commit subjects carry a type prefix — `feat:`, `fix:`, `style:`, `chore:`, and `feat!:` for a breaking change (the `proxy` → `proxysw` rename), with the subject in Chinese and the body explaining why.
 - Work is tracked as GitHub issues and closed with a comment plus `gh issue close`.

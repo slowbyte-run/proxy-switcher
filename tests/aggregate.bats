@@ -562,6 +562,30 @@ TOML
   [ ! -e "$NIRI_STUB_LOG" ]
 }
 
+@test "--dry-run --json keeps stdout a clean document even when a carrier is chatty" {
+  # No write_all_carriers_off here on purpose: leaving ~/.npmrc absent is what
+  # makes the npm carrier announce that it would create the file. That
+  # announcement used to go to stdout and turned the document into text a
+  # parser cannot read, while every other test hid the branch by pre-creating
+  # the file. `run` merges stderr into $output, so stdout is captured alone.
+  [ ! -e "$(npmrc_path)" ]
+
+  run bash -c '"$PROXYSW_BIN" on --dry-run --json 2>/dev/null'
+
+  [ "$status" -eq 0 ]
+  printf '%s\n' "$output" | jq -e . >/dev/null
+  # Not the literal version: this test proves the document parses at all.
+  [ "$(printf '%s\n' "$output" | jq -r '.schema | type')" = "number" ]
+}
+
+@test "--dry-run --json still sends carrier progress detail to stderr" {
+  # The fix moves the message; it must not delete it.
+  run bash -c '"$PROXYSW_BIN" on --dry-run --json 2>&1 >/dev/null'
+
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"does not exist; it would be created"* ]]
+}
+
 @test "--dry-run --json reports already-on carriers as unchanged" {
   write_all_carriers_on
 
@@ -577,7 +601,10 @@ TOML
   [ "$status" -eq 0 ]
   printf '\n// edited by hand\n' >> "$(niri_config_path)"
 
-  run_proxysw off --dry-run --json
+  # stdout only: the conflict diagnostics go to stderr, as every other
+  # human-facing line does under --json. `run` would merge the two and hide a
+  # document that a parser cannot read.
+  run bash -c '"$PROXYSW_BIN" off --dry-run --json 2>/dev/null'
 
   [ "$status" -eq 1 ]
   printf '%s\n' "$output" | jq -e . >/dev/null
@@ -597,13 +624,54 @@ TOML
   [ "$(printf '%s\n' "$output" | jq -r '[.carriers[] | select(.name == "ssh")] | length')" -eq 0 ]
 }
 
-@test "--json without --dry-run is a usage error for switch commands" {
-  run_proxysw on --json
-  [ "$status" -eq 2 ]
-  [[ "$output" == *"--dry-run"* ]]
+@test "a real switch honours --json and still writes the files" {
+  # `--json` used to be a dry-run-only flag. A TUI applies switches through the
+  # CLI, so the executing path needs the same document the preview produces.
+  # The two must be told apart by `dry_run`, and the write must still happen.
+  write_all_carriers_off
 
-  run_proxysw restore --json
+  run bash -c '"$PROXYSW_BIN" on --json 2>/dev/null'
+
+  [ "$status" -eq 0 ]
+  printf '%s\n' "$output" | jq -e . >/dev/null
+  [ "$(printf '%s\n' "$output" | jq -r .dry_run)" = "false" ]
+  [ "$(printf '%s\n' "$output" | jq -r .action)" = "on" ]
+  # Every selected carrier reports that this run wrote it.
+  for carrier in $(managed_carriers); do
+    [ "$(printf '%s\n' "$output" | jq -r --arg name "$carrier" \
+      '.carriers[] | select(.name == $name) | .written')" = "true" ]
+  done
+  # The files really changed, not just the document.
+  [ "$(printf '%s\n' "$output" | jq -r '[.carriers[] | select(.state == "on")] | length')" -eq 5 ]
+}
+
+@test "--dry-run --json reports written false because nothing was applied" {
+  write_all_carriers_off
+
+  run bash -c '"$PROXYSW_BIN" on --dry-run --json 2>/dev/null'
+
+  [ "$status" -eq 0 ]
+  [ "$(printf '%s\n' "$output" | jq -r .dry_run)" = "true" ]
+  [ "$(printf '%s\n' "$output" | jq -r '[.carriers[] | select(.written)] | length')" -eq 0 ]
+}
+
+@test "--verbose and --json are mutually exclusive for switch commands" {
+  # The document already states what each carrier did; verbose prose would
+  # duplicate it to a reader that asked for data.
+  run_proxysw on --json --verbose
   [ "$status" -eq 2 ]
+  [[ "$output" == *"--verbose"* ]]
+}
+
+@test "status --json exposes pending_reload as a field, not just prose" {
+  write_all_carriers_off
+
+  run_proxysw status --json
+
+  [ "$status" -eq 0 ]
+  # Every carrier carries the boolean, false by default.
+  [ "$(printf '%s\n' "$output" | jq -r '[.carriers[] | has("pending_reload")] | all')" = "true" ]
+  [ "$(printf '%s\n' "$output" | jq -r '[.carriers[] | select(.pending_reload)] | length')" -eq 0 ]
 }
 
 @test "the plan document carries a schema version" {
@@ -612,5 +680,5 @@ TOML
   run_proxysw on --dry-run --json
 
   [ "$status" -eq 0 ]
-  [ "$(printf '%s\n' "$output" | jq -r .schema)" = "1" ]
+  [ "$(printf '%s\n' "$output" | jq -r .schema)" = "2" ]
 }

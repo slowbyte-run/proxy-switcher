@@ -152,11 +152,11 @@ proxysw restore
 | `--short` | `status` | Carrier and state columns only, for narrow terminals |
 | `--require-up` | `status` | Exit 1 when the endpoint is down; implies `--check` |
 | `--shell <name>` | `env` | `bash`, `zsh` or `fish`; inferred from `$SHELL` when omitted |
-| `--json` | `status`, `env`, `--dry-run` | Machine-readable output; carries a top-level `schema` field |
+| `--json` | all commands | Machine-readable output; one document on stdout, with a top-level `schema` field |
 | `-V`, `--version` | all commands | Print the version and exit |
 | `-h`, `--help` | all commands | Show help |
 
-The machine-readable output is the integration surface for status bars and wrapper scripts: `proxysw status --json` reports every carrier, and `proxysw --dry-run on --json` returns the full change plan including conflicts and failures. Both carry `schema`, bumped whenever a field changes. There is no TUI yet.
+The machine-readable output is the integration surface for status bars and wrapper scripts: `proxysw status --json` reports every carrier, `proxysw --dry-run on --json` returns the change plan, and `proxysw on --json` returns the same document after actually writing (`dry_run` is `false`, and each carrier carries `written` and `pending_reload`). All of them carry `schema`, bumped whenever a field changes. Human-facing progress goes to stderr, so stdout can be piped straight into `jq`. `--verbose` and `--json` are mutually exclusive. There is no TUI yet.
 
 The difference between `off` and `restore` is deliberate: `off` renders "no proxy configured", while `restore` rolls the bytes back. The original file may already contain proxy values, so making `off` a rollback would turn "off" into "put the proxy back". See [ADR 0003](docs/adr/0003-off-renders-no-proxy-restore-recovers.md).
 
@@ -201,8 +201,12 @@ fish is not a managed carrier (see [ADR 0006](docs/adr/0006-fish-is-not-a-manage
 ## Testing
 
 ```bash
-bats tests/
+./scripts/check          # style, shell style and the full suite; run before committing
+./scripts/check lint     # style only, about 0.2s
+PROXYSW_CHECK_JOBS=8 ./scripts/check   # parallel suite on a local machine
 ```
+
+`scripts/check` pins the same tool versions as `.pre-commit-config.yaml`, and CI runs the same three tools.
 
 Every test builds a throwaway `HOME` and XDG tree under `$BATS_TEST_TMPDIR` and puts a stub `niri` first on `PATH`. The suite is offline, never uses sudo, and never touches the real user configuration or a real compositor.
 

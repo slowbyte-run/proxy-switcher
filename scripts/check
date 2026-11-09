@@ -1,0 +1,55 @@
+#!/usr/bin/env bash
+# The repository's one gate: style, shell style, and the bats suite.
+#
+# CI (`.github/workflows/test.yml`) and `.pre-commit-config.yaml` run the same
+# three tools; this script is the local spelling of them. Corrections to the
+# command line belong here, not in a steering document.
+#
+# Usage: scripts/check [lint|test|all]   (default: all)
+set -euo pipefail
+cd "$(dirname "${BASH_SOURCE[0]}")/.."
+
+# `uvx` installs its tools under ~/.local/share/uv, which is a read-only mount
+# on some machines; the cache under ~/.cache is writable, so only the tool
+# directory needs redirecting. Override both to keep a sandbox fully isolated.
+export UV_TOOL_DIR="${UV_TOOL_DIR:-${TMPDIR:-/tmp}/proxy-switcher-uv-tools}"
+export UV_CACHE_DIR="${UV_CACHE_DIR:-$HOME/.cache/uv}"
+
+# CI and pre-commit run the suite serially, so that stays the default. A local
+# run may parallelise through the variable instead of a second command line.
+BATS_ARGS=()
+if [ -n "${PROXYSW_CHECK_JOBS:-}" ]; then
+  BATS_ARGS=(--jobs "$PROXYSW_CHECK_JOBS")
+fi
+
+# Tool versions are pinned to the same ones `.pre-commit-config.yaml` uses, so
+# a local run and a hook run cannot disagree about what "clean" means. Bump
+# both together, and CI's `ruff-action` with them.
+RUFF_VERSION="0.17.4"
+SHELLCHECK_VERSION="0.10.0.1"
+
+lint() {
+  uvx "ruff@$RUFF_VERSION" check libexec
+  uvx "ruff@$RUFF_VERSION" format --check libexec
+  # The linter ships as a Python wheel here; no distro package is guaranteed.
+  # `-x` follows the sourced fixture.
+  uvx --from "shellcheck-py==$SHELLCHECK_VERSION" shellcheck -x \
+    bin/proxysw scripts/check tests/helpers/fixture.bash
+}
+
+test_suite() {
+  bats "${BATS_ARGS[@]}" tests/
+}
+
+case "${1:-all}" in
+  lint) lint ;;
+  test) test_suite ;;
+  all)
+    lint
+    test_suite
+    ;;
+  *)
+    printf 'usage: %s [lint|test|all]\n' "${0##*/}" >&2
+    exit 2
+    ;;
+esac

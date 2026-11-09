@@ -112,6 +112,18 @@ carrier_modules() {
   [ "$status" -ne 0 ]
 }
 
+@test "no carrier module prints to stdout" {
+  # Stdout belongs to the command's result. A carrier that calls bare `print`
+  # corrupts the `--json` document whenever its branch fires (a missing
+  # ~/.npmrc was enough to break `--dry-run --json`). Progress detail goes
+  # through `context.info`, which writes to stderr.
+  local module
+  for module in $(carrier_modules); do
+    run grep -nE '^[[:space:]]*print\(' "$REPO_ROOT/libexec/carriers/$module.py"
+    [ "$status" -ne 0 ]
+  done
+}
+
 @test "the CLI keeps exit codes 0, 1 and 2 as documented" {
   run_proxysw --help
   [ "$status" -eq 0 ]

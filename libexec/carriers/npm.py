@@ -119,10 +119,12 @@ def _remove(text: str, keys: tuple[str, ...]) -> str:
 def render_on(text: str, context) -> str:
     path = resolve(context)
     if not os.path.exists(path):
+        # Progress detail, not a result: it goes to stderr through
+        # ``context.info`` so a ``--json`` document on stdout stays parseable.
         if context.dry_run:
-            print(f"npm: {path} does not exist; it would be created")
+            context.info(f"npm: {path} does not exist; it would be created")
         else:
-            print(f"npm: {path} did not exist; creating it")
+            context.info(f"npm: {path} did not exist; creating it")
     return _update(text, _values(context))
 
 

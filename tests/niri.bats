@@ -210,6 +210,43 @@ STUB
   [ "$(jq -r '.carriers.niri.pending_reload' "$(proxy_manifest_path)")" = "true" ]
 }
 
+@test "on --json reports a failed reload as pending_reload in the document" {
+  # The manifest already recorded this; the executing document now says it too,
+  # so a TUI can badge the carrier without reading prose or the state directory.
+  write_niri_plain
+  cat > "$FIXTURE_ROOT/bin/niri" <<'STUB'
+#!/usr/bin/env bash
+printf '%s\n' "$*" >> "$NIRI_STUB_LOG"
+echo "no compositor" >&2
+exit 1
+STUB
+  chmod +x "$FIXTURE_ROOT/bin/niri"
+
+  run bash -c '"$PROXYSW_BIN" on niri --json 2>/dev/null'
+
+  [ "$status" -eq 0 ]
+  [ "$(printf '%s\n' "$output" | jq -r '.carriers[0].written')" = "true" ]
+  [ "$(printf '%s\n' "$output" | jq -r '.carriers[0].pending_reload')" = "true" ]
+}
+
+@test "status --json reports the same failed reload as a field" {
+  write_niri_plain
+  cat > "$FIXTURE_ROOT/bin/niri" <<'STUB'
+#!/usr/bin/env bash
+printf '%s\n' "$*" >> "$NIRI_STUB_LOG"
+echo "no compositor" >&2
+exit 1
+STUB
+  chmod +x "$FIXTURE_ROOT/bin/niri"
+
+  run_proxysw on niri
+  run bash -c '"$PROXYSW_BIN" status --json 2>/dev/null'
+
+  [ "$status" -eq 0 ]
+  [ "$(printf '%s\n' "$output" | jq -r \
+    '.carriers[] | select(.name == "niri") | .pending_reload')" = "true" ]
+}
+
 @test "writing preserves the existing file permissions" {
   write_niri_plain
   chmod 600 "$(niri_config_path)"

@@ -19,16 +19,19 @@ jobs:
       - name: Install test dependencies
         run: python3 -m pip install --disable-pip-version-check pyyaml
 
+      # Tool versions mirror the pins in `scripts/check`; bump them together.
       - uses: astral-sh/ruff-action@v3
         with:
+          version: "0.17.4"
           args: check
 
       - uses: astral-sh/ruff-action@v3
         with:
+          version: "0.17.4"
           args: format --check
 
       - name: shellcheck
-        run: shellcheck -x bin/proxysw tests/helpers/fixture.bash
+        run: shellcheck -x bin/proxysw scripts/check tests/helpers/fixture.bash
 
       - name: bats
         run: bats tests/

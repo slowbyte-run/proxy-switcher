@@ -31,7 +31,7 @@ Commands:
 
 Options:
   --proxy <url>         Override the configured proxy endpoint (all commands)
-  --json                Machine-readable output (status, env, --dry-run)
+  --json                Machine-readable output (every command)
   -V, --version         Show the version and exit
   -h, --help            Show this help
 
@@ -187,8 +187,10 @@ def _reject_options(parsed: Parsed, command: str) -> None:
         raise UsageError("--check, --short and --require-up are only for status")
     if parsed.shell:
         raise UsageError("--shell is only for env")
-    if parsed.json and not parsed.dry_run:
-        raise UsageError("--json is only for status, env and --dry-run")
+    if parsed.json and parsed.verbose:
+        # The document already says what each carrier did; verbose lines would
+        # duplicate it on stderr for no reader.
+        raise UsageError("--verbose and --json are mutually exclusive")
 
 
 def _settings_endpoint(override: str | None) -> tuple[str, str, tuple[str, ...]]:

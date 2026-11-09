@@ -185,7 +185,9 @@ def render_off(text: str, context, remove_region: bool = False) -> str:
 def after_write(context) -> bool:
     """Report a newly created rc file; there is nothing to reload."""
     if not getattr(context, _EXISTED_ATTRIBUTE, True):
-        print(f"shell: created {rc_path(context)}")
+        # Progress detail, not a result: stderr keeps stdout parseable under
+        # ``--json``.
+        context.info(f"shell: created {rc_path(context)}")
     return True
 
 

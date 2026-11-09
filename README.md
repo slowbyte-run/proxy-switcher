@@ -152,11 +152,11 @@ proxysw restore
 | `--short` | `status` | 只输出载体与状态两列，窄终端可用 |
 | `--require-up` | `status` | 端点不通时退出 1；隐含 `--check` |
 | `--shell <name>` | `env` | `bash`、`zsh` 或 `fish`；不指定时按 `$SHELL` 推断 |
-| `--json` | `status`、`env`、`--dry-run` | 机器可读输出，顶层带 `schema` 字段 |
+| `--json` | 所有命令 | 机器可读输出，stdout 上只有一份文档，顶层带 `schema` 字段 |
 | `-V`, `--version` | 所有命令 | 打印版本并退出 |
 | `-h`, `--help` | 所有命令 | 帮助 |
 
-机器可读输出适用于状态栏与包装脚本：`proxysw status --json` 给出各载体状态，`proxysw --dry-run on --json` 给出完整的变更计划（含冲突与失败），两者顶层都有 `schema`，字段变更时会递增。本仓库暂不提供 TUI。
+机器可读输出适用于状态栏与包装脚本：`proxysw status --json` 给出各载体状态，`proxysw --dry-run on --json` 给出变更计划，`proxysw on --json` 会在真正写盘之后给出同一份文档（`dry_run` 为 `false`，每个载体带 `written` 与 `pending_reload`），三者顶层都有 `schema`，字段变更时会递增。人话进度一律走 stderr，所以 stdout 可以整份交给 `jq`。`--verbose` 与 `--json` 互斥。本仓库暂不提供 TUI。
 
 `off` 与 `restore` 的区别是刻意的：`off` 把配置渲染成「没有代理」，而 `restore` 才回滚到开关前的字节。原始文件本就可能含代理值，若 `off` 走回滚，「关闭」就会变成「把代理装回去」。设计取舍见 [ADR 0003](docs/adr/0003-off-renders-no-proxy-restore-recovers.md)。
 
@@ -201,8 +201,12 @@ fish 不是受管载体（见 [ADR 0006](docs/adr/0006-fish-is-not-a-managed-car
 ## 测试
 
 ```bash
-bats tests/
+./scripts/check          # 风格、shell 风格与全量测试，提交前跑这个
+./scripts/check lint     # 只跑风格检查，约 0.2 秒
+PROXYSW_CHECK_JOBS=8 ./scripts/check   # 本机并行跑全量测试
 ```
+
+`scripts/check` 里的工具版本与 `.pre-commit-config.yaml` 一致，CI 也跑同样三个工具。
 
 每个用例都在 `$BATS_TEST_TMPDIR` 下构造临时的 `HOME` 与 XDG 目录，并把一个只记录参数的桩 `niri` 放到 `PATH` 最前面。测试离线、不使用 sudo、不触碰真实的用户配置或真实的合成器。
 

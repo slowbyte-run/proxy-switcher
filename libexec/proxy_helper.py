@@ -142,6 +142,7 @@ def carrier_view(
     tools: tuple[str, ...],
     note: str,
     skipped: bool = False,
+    pending_reload: bool = False,
 ) -> dict:
     if skipped:
         note = (note + "; " if note else "") + "excluded by configuration; skipped"
@@ -152,6 +153,9 @@ def carrier_view(
         "tools": list(tools),
         "note": note,
         "skipped": skipped,
+        # A field of its own, not only a phrase inside ``note``: a status-bar
+        # widget or a TUI needs to test a boolean, not substring-match prose.
+        "pending_reload": pending_reload,
     }
 
 
@@ -295,6 +299,7 @@ def collect_status(check: bool = False, endpoint: str | None = None) -> dict:
                 carrier.tools,
                 note,
                 skipped=carrier.name in excluded,
+                pending_reload=carrier.name in pending,
             )
         )
 

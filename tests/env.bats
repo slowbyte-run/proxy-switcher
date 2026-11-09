@@ -152,7 +152,7 @@ SH
 
   [ "$status" -eq 0 ]
   printf '%s\n' "$output" | jq -e . >/dev/null
-  [ "$(printf '%s\n' "$output" | jq -r .schema)" = "1" ]
+  [ "$(printf '%s\n' "$output" | jq -r .schema)" = "2" ]
   [ "$(printf '%s\n' "$output" | jq -r .state)" = "on" ]
   [ "$(printf '%s\n' "$output" | jq -r '.exports.http_proxy')" = "http://127.0.0.1:7890" ]
   [ "$(printf '%s\n' "$output" | jq -r '.exports.NODE_USE_ENV_PROXY')" = "1" ]
