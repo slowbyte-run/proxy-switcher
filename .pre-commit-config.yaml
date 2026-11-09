@@ -1,0 +1,33 @@
+# Hooks that keep the repository's single gate (`bats tests/`) honest before a
+# commit is even created. Install once with `pre-commit install`.
+repos:
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v5.0.0
+    hooks:
+      - id: end-of-file-fixer
+      - id: trailing-whitespace
+
+  - repo: https://github.com/astral-sh/ruff-pre-commit
+    rev: v0.17.4
+    hooks:
+      - id: ruff
+        args: [--fix]
+      - id: ruff-format
+
+  - repo: https://github.com/koalaman/shellcheck-precommit
+    rev: v0.10.0
+    hooks:
+      - id: shellcheck
+        args: [-x]
+        files: '^(bin/proxy|tests/.*\.bash)$'
+
+  # The test suite is the only gate; nothing else proves the carriers still
+  # write the bytes they promise. Plain `bats` (no --jobs) keeps the hook free
+  # of the flock/parallel dependency that --jobs needs.
+  - repo: local
+    hooks:
+      - id: bats
+        name: bats
+        entry: bats tests/
+        language: system
+        pass_filenames: false
