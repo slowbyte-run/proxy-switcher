@@ -16,6 +16,11 @@ import subprocess
 import sys
 
 FZF_MISSING = "proxysw: tui needs fzf; install fzf or set PROXYSW_FZF to its path"
+INTERRUPTED_DRY_RUN = "proxysw: interrupted; nothing was changed"
+# An apply is not atomic across carriers: the CLI writes one carrier at a
+# time, so an interrupt can leave some of them switched and the manifest
+# unsaved. Reporting a clean cancel would hide that.
+INTERRUPTED_APPLY = "proxysw: interrupted; run `proxysw status`"
 
 
 def _cli_path() -> str:
@@ -68,11 +73,20 @@ def _status(proxy: str | None) -> dict | None:
     return document
 
 
+def _is_unmanaged(carrier: dict) -> bool:
+    return carrier.get("state") == "unmanaged"
+
+
+def _is_skipped(carrier: dict) -> bool:
+    """Excluded by config: named in the header, never a selectable row."""
+    return bool(carrier.get("skipped"))
+
+
 def _switchable(status: dict) -> list[dict]:
     return [
         carrier
         for carrier in status.get("carriers", [])
-        if not carrier.get("skipped") and carrier.get("state") != "unmanaged"
+        if not _is_skipped(carrier) and not _is_unmanaged(carrier)
     ]
 
 
@@ -87,36 +101,29 @@ def _colored_state(state: str) -> str:
     return f"{color}{state}{COLOR_RESET}" if color else state
 
 
-def _flags(carrier: dict) -> str:
-    flags = []
-    if carrier.get("pending_reload"):
-        flags.append("reload pending")
-    if carrier.get("skipped"):
-        flags.append("excluded")
-    return ", ".join(flags) or "-"
+def _flag_text(carrier: dict) -> str:
+    # Rows are already filtered to switchable carriers, so a skipped row can
+    # never reach this function; the header names excluded carriers instead.
+    # The flag comes from the structured ``pending_reload`` field rather than
+    # from substring-matching ``note``, which carries the CLI's own prose
+    # about the same fact.
+    return "reload pending" if carrier.get("pending_reload") else "-"
 
 
-def _rows(carriers: list[dict]) -> str:
-    """Tab-separated rows: name, coloured state, note, path, tools, flags, state.
+# Row columns, in order. The list shows only the first three; the preview
+# reads the rest through fzf's numeric placeholders. Indices are derived from
+# this tuple so the row builder, ``--with-nth`` and the preview cannot drift
+# apart.
+ROW_COLUMNS = ("name", "state", "note", "path", "tools", "flags", "state_text")
+LIST_COLUMNS = ("name", "state", "note")
+PREVIEW_COLUMNS = ("path", "tools", "note", "flags", "state_text")
 
-    fzf shows the first three fields (``--with-nth``) and keeps the rest as the
-    source for the preview's placeholders. Nothing here reads a carrier file:
-    every value comes from the ``status --json`` document.
-    """
-    lines = []
-    for carrier in carriers:
-        fields = [
-            carrier["name"],
-            _colored_state(carrier["state"]),
-            carrier.get("note") or "",
-            carrier.get("path") or "",
-            ", ".join(carrier.get("tools") or []),
-            _flags(carrier),
-            carrier["state"],
-        ]
-        lines.append("\t".join(fields) + "\n")
-    return "".join(lines)
 
+def _placeholder(column: str) -> str:
+    return f"{{{ROW_COLUMNS.index(column) + 1}}}"
+
+
+WITH_NTH = ",".join(str(ROW_COLUMNS.index(column) + 1) for column in LIST_COLUMNS)
 
 KEY_HINTS = "Tab multi-select | Ctrl-A select all | Enter apply | Esc cancel"
 
@@ -124,9 +131,35 @@ KEY_HINTS = "Tab multi-select | Ctrl-A select all | Enter apply | Esc cancel"
 # row, shell-quoted. Only metadata from `status --json` is printed; the file
 # itself is never read, so npm/ssh credentials cannot reach the screen.
 PREVIEW_COMMAND = (
-    "printf 'path   %s\\ntools  %s\\nnote   %s\\nflags  %s\\nstate  %s\\n'"
-    " {4} {5} {3} {6} {7}"
+    "printf 'path   %s\\ntools  %s\\nnote   %s\\nflags  %s\\nstate  %s\\n' "
+    + " ".join(_placeholder(column) for column in PREVIEW_COLUMNS)
 )
+
+
+def _row_values(carrier: dict) -> dict[str, str]:
+    return {
+        "name": carrier["name"],
+        "state": _colored_state(carrier["state"]),
+        "note": carrier.get("note") or "",
+        "path": carrier.get("path") or "",
+        "tools": ", ".join(carrier.get("tools") or []),
+        "flags": _flag_text(carrier),
+        "state_text": carrier["state"],
+    }
+
+
+def _rows(carriers: list[dict]) -> str:
+    """Tab-separated rows built in ``ROW_COLUMNS`` order.
+
+    fzf shows the first three fields (``--with-nth``) and keeps the rest as the
+    source for the preview's placeholders. Nothing here reads a carrier file:
+    every value comes from the ``status --json`` document.
+    """
+    lines = []
+    for carrier in carriers:
+        values = _row_values(carrier)
+        lines.append("\t".join(values[column] for column in ROW_COLUMNS) + "\n")
+    return "".join(lines)
 
 
 def _header(status: dict) -> str:
@@ -139,12 +172,12 @@ def _header(status: dict) -> str:
     probe = (status.get("check") or {}).get("state", "unknown")
     line = f"endpoint {status['endpoint']}  {probe}"
     for carrier in status.get("carriers", []):
-        if carrier.get("state") == "unmanaged":
+        if _is_unmanaged(carrier):
             line += f" | {carrier['name']}: unmanaged (read-only)"
     excluded = [
         carrier["name"]
         for carrier in status.get("carriers", [])
-        if carrier.get("skipped")
+        if _is_skipped(carrier)
     ]
     line += " | excluded: " + (", ".join(excluded) if excluded else "none")
     return f"{line}\n{KEY_HINTS}"
@@ -224,7 +257,12 @@ def run(action: str, proxy: str | None) -> int:
         print(FZF_MISSING, file=sys.stderr)
         return 2
 
-    status = _status(proxy)
+    try:
+        status = _status(proxy)
+    except KeyboardInterrupt:
+        # The probe writes nothing, so this is the same safe cancel as Esc.
+        print("proxysw: cancelled", file=sys.stderr)
+        return 0
     if status is None:
         return 1
 
@@ -244,7 +282,7 @@ def run(action: str, proxy: str | None) -> int:
                 # The list shows only name, state and note; path, tools and
                 # flags stay in the row for the preview, which reads the raw
                 # fields.
-                "--with-nth=1,2,3",
+                f"--with-nth={WITH_NTH}",
                 "--prompt",
                 f"proxysw {action}> ",
                 "--bind",
@@ -289,7 +327,13 @@ def run(action: str, proxy: str | None) -> int:
         print("proxysw: nothing selected", file=sys.stderr)
         return 0
 
-    code, plan, stderr = _switch(action, names, proxy, dry_run=True)
+    try:
+        code, plan, stderr = _switch(action, names, proxy, dry_run=True)
+    except KeyboardInterrupt:
+        # The plan is a preview, so no carrier changed; but the command did not
+        # finish its own job, so it is not the clean 0-exit cancel path either.
+        print(INTERRUPTED_DRY_RUN, file=sys.stderr)
+        return 1
     if plan is None:
         if stderr:
             sys.stderr.write(stderr)
@@ -312,7 +356,11 @@ def run(action: str, proxy: str | None) -> int:
         print("proxysw: cancelled", file=sys.stderr)
         return 0
 
-    code, result, stderr = _switch(action, names, proxy, dry_run=False)
+    try:
+        code, result, stderr = _switch(action, names, proxy, dry_run=False)
+    except KeyboardInterrupt:
+        print(INTERRUPTED_APPLY, file=sys.stderr)
+        return 1
     if result is None:
         if stderr:
             sys.stderr.write(stderr)

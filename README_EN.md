@@ -177,6 +177,7 @@ The difference between `off` and `restore` is deliberate: `off` renders "no prox
 - **Optional dependency**: `fzf` is the only external program, and only `tui` needs it; the core commands still run on the Python standard library. When fzf is missing the command exits with a usage error (2); `PROXYSW_FZF` points at a specific binary.
 - **The `--json` exception**: `--json` is for non-interactive commands. `tui` rejects `--json`, `--dry-run`, `--force`, `--verbose`, `--check`, `--short`, `--require-up` and `--shell`; it accepts one optional action and `--proxy`.
 - **Consumer boundary**: `tui` reads status, previews the plan and applies the switch by running `proxysw ... --json` subprocesses. It never imports the engine, the state helper or the carrier registry, and never writes a carrier file itself. There is still one writer and one JSON contract (schema stays 2); the lock, conflict detection and atomic writes remain on the CLI side.
+- **Interrupts**: Ctrl-C in the list or at the confirmation cancels (exit 0, nothing written). Interrupting an apply exits 1 and asks you to run `proxysw status`, because a multi-carrier switch may already have written some carriers.
 - **Known limits**: the first version views and switches only. `restore`, conflict `--force`, and endpoint or `no_proxy` editing stay on the CLI.
 
 Real fzf rendering, keys and narrow-terminal behaviour are beyond the stub; before a release, walk the [manual smoke checklist](docs/tui-manual-smoke.md) in a real terminal.
