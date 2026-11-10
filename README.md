@@ -25,6 +25,7 @@
 - [安装](#安装)
 - [快速开始](#快速开始)
 - [命令参考](#命令参考)
+- [TUI](#tui)
 - [配置](#配置)
 - [载体详解](#载体详解)
 - [退出码](#退出码)
@@ -169,6 +170,18 @@ proxysw restore
 
 `off` 与 `restore` 的区别是刻意的：`off` 把配置渲染成「没有代理」，而 `restore` 才回滚到开关前的字节。原始文件本就可能含代理值，若 `off` 走回滚，「关闭」就会变成「把代理装回去」。设计取舍见 [ADR 0003](docs/adr/0003-off-renders-no-proxy-restore-recovers.md)。
 
+## TUI
+
+`proxysw tui [on|off|toggle]` 在终端里打开 fzf 选择器：列出受管且未被 `exclude` 的载体及其开关状态，Tab 多选、Ctrl-A 全选、Enter 应用、Esc 取消；不带动作时默认 `toggle`。docker 和被 `exclude` 的载体只出现在头部，不会进入可选行。
+
+- **可选依赖**：`fzf` 是唯一的外部程序，且只影响 `tui`；核心命令仍只依赖 Python 标准库。fzf 缺失时以用法错误（退出码 2）结束，可用 `PROXYSW_FZF` 指定 fzf 路径。
+- **`--json` 的例外**：`--json` 只适用于非交互命令。`tui` 拒绝 `--json`、`--dry-run`、`--force`、`--verbose`、`--check`、`--short`、`--require-up` 和 `--shell`，只接受一个可选动作与 `--proxy`。
+- **消费者边界**：`tui` 通过 `proxysw ... --json` 子进程读取状态、预览计划并应用开关；它不 import 引擎、状态 helper 或载体注册表，也不直接写载体文件。因此仍然只有一个写者、一份 JSON 契约（schema 保持 2），锁、冲突检测与原子写入都在 CLI 一侧。
+- **中断**：在列表或确认行按 Ctrl-C 等于取消（退出码 0，不写盘）；apply 期间被中断则以退出码 1 结束并提示运行 `proxysw status`，因为多载体开关可能已经写入了一部分。
+- **已知限制**：首版只做查看与开关；`restore`、冲突时的 `--force`、端点与 `no_proxy` 编辑仍走 CLI。
+
+真实 fzf 的渲染、键位和窄终端表现无法由 stub 覆盖，发布前按[真实 fzf 人工冒烟清单](docs/tui-manual-smoke.md)在真实终端逐项确认。
+
 ## 配置
 
 配置文件位于 `$XDG_CONFIG_HOME/proxy-switcher/config.toml`（通常是 `~/.config/proxy-switcher/config.toml`）：
@@ -217,7 +230,7 @@ PROXYSW_CHECK_JOBS=8 ./scripts/check   # 本机并行跑全量测试
 
 `scripts/check` 里的工具版本与 `.pre-commit-config.yaml` 一致，CI 也跑同样三个工具。
 
-每个用例都在 `$BATS_TEST_TMPDIR` 下构造临时的 `HOME` 与 XDG 目录，并把一个只记录参数的桩 `niri` 放到 `PATH` 最前面。测试离线、不使用 sudo、不触碰真实的用户配置或真实的合成器。
+每个用例都在 `$BATS_TEST_TMPDIR` 下构造临时的 `HOME` 与 XDG 目录，并把一个只记录参数的桩 `niri` 放到 `PATH` 最前面。测试离线、不使用 sudo、不触碰真实的用户配置或真实的合成器。TUI 用例还使用一个 stub fzf；真实 fzf 的渲染与键位由[人工冒烟清单](docs/tui-manual-smoke.md)覆盖，不进自动化门禁。
 
 ```bash
 bats tests/niri.bats
@@ -234,7 +247,7 @@ bats --filter 'restore' tests/
 - 不写 `all_proxy` / `ALL_PROXY`，也不解析 FlClash 的私有配置。
 - fish 不是受管载体：`proxysw env --shell fish` 输出正确语法，但不会写入 `config.fish`。
 - 并发开关会排队（默认最多等 5 秒，超时退出 1），不会交错执行。
-- TUI 需要可选安装的 `fzf`；首版不做 restore、冲突 force 或端点编辑。
+- TUI 需要可选安装的 `fzf`（缺失时退出 2）；只做查看与开关，不做 `restore`、冲突 `--force` 或端点/`no_proxy` 编辑。
 - 状态栏插件尚未提供。
 
 ## 开发
@@ -246,6 +259,7 @@ libexec/proxy_engine.py   快照、冲突检测、原子写入、清单
 libexec/proxy_helper.py   配置、状态输出、env 与端口探测
 libexec/proxy_common.py   六个变量、状态枚举、共享文本工具
 libexec/kdl.py            保留注释与偏移的 KDL 编辑
+libexec/tui.py            fzf 选择器；只通过 --json 子进程调用 CLI
 libexec/carriers/         每个载体一个模块 + 注册表
 tests/                    bats 黑盒测试
 ```

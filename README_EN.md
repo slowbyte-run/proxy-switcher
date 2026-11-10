@@ -25,6 +25,7 @@ A command-line tool that switches HTTP/HTTPS proxy settings for every tool in a 
 - [Installation](#installation)
 - [Quick start](#quick-start)
 - [Commands](#commands)
+- [TUI](#tui)
 - [Configuration](#configuration)
 - [Carriers](#carriers)
 - [Exit codes](#exit-codes)
@@ -169,6 +170,18 @@ The machine-readable output is the integration surface for status bars and wrapp
 
 The difference between `off` and `restore` is deliberate: `off` renders "no proxy configured", while `restore` rolls the bytes back. The original file may already contain proxy values, so making `off` a rollback would turn "off" into "put the proxy back". See [ADR 0003](docs/adr/0003-off-renders-no-proxy-restore-recovers.md).
 
+## TUI
+
+`proxysw tui [on|off|toggle]` opens an fzf picker over the carriers that are managed and not removed by `exclude`, showing each one's switch state: Tab multi-selects, Ctrl-A selects all, Enter applies and Esc cancels, with `toggle` as the default action. docker and excluded carriers appear only in the header, never as selectable rows.
+
+- **Optional dependency**: `fzf` is the only external program, and only `tui` needs it; the core commands still run on the Python standard library. When fzf is missing the command exits with a usage error (2); `PROXYSW_FZF` points at a specific binary.
+- **The `--json` exception**: `--json` is for non-interactive commands. `tui` rejects `--json`, `--dry-run`, `--force`, `--verbose`, `--check`, `--short`, `--require-up` and `--shell`; it accepts one optional action and `--proxy`.
+- **Consumer boundary**: `tui` reads status, previews the plan and applies the switch by running `proxysw ... --json` subprocesses. It never imports the engine, the state helper or the carrier registry, and never writes a carrier file itself. There is still one writer and one JSON contract (schema stays 2); the lock, conflict detection and atomic writes remain on the CLI side.
+- **Interrupts**: Ctrl-C in the list or at the confirmation cancels (exit 0, nothing written). Interrupting an apply exits 1 and asks you to run `proxysw status`, because a multi-carrier switch may already have written some carriers.
+- **Known limits**: the first version views and switches only. `restore`, conflict `--force`, and endpoint or `no_proxy` editing stay on the CLI.
+
+Real fzf rendering, keys and narrow-terminal behaviour are beyond the stub; before a release, walk the [manual smoke checklist](docs/tui-manual-smoke.md) in a real terminal.
+
 ## Configuration
 
 The config file lives at `$XDG_CONFIG_HOME/proxy-switcher/config.toml` (usually `~/.config/proxy-switcher/config.toml`):
@@ -217,7 +230,7 @@ PROXYSW_CHECK_JOBS=8 ./scripts/check   # parallel suite on a local machine
 
 `scripts/check` pins the same tool versions as `.pre-commit-config.yaml`, and CI runs the same three tools.
 
-Every test builds a throwaway `HOME` and XDG tree under `$BATS_TEST_TMPDIR` and puts a stub `niri` first on `PATH`. The suite is offline, never uses sudo, and never touches the real user configuration or a real compositor.
+Every test builds a throwaway `HOME` and XDG tree under `$BATS_TEST_TMPDIR` and puts a stub `niri` first on `PATH`. The suite is offline, never uses sudo, and never touches the real user configuration or a real compositor. TUI tests also use a stub fzf; real fzf rendering and keys are covered by the [manual smoke checklist](docs/tui-manual-smoke.md), outside the automated gate.
 
 ```bash
 bats tests/niri.bats
@@ -234,7 +247,7 @@ bats --filter 'restore' tests/
 - `all_proxy` / `ALL_PROXY` are never written, and FlClash's private config is never parsed.
 - fish is not a managed carrier: `proxysw env --shell fish` renders the right syntax but never writes `config.fish`.
 - Concurrent switches queue (5s by default, then exit 1) instead of interleaving.
-- The TUI needs the optional `fzf`; the first version does not restore, force conflicts, or edit the endpoint.
+- The TUI is an optional entry point: it needs fzf (exit 2 when missing) and only views and switches. `restore`, conflict `--force`, and endpoint/`no_proxy` editing stay on the CLI.
 - No status-bar plugin yet.
 
 ## Development
@@ -246,6 +259,7 @@ libexec/proxy_engine.py   snapshots, conflict detection, atomic writes, manifest
 libexec/proxy_helper.py   config, status output, env, port probe
 libexec/proxy_common.py   the six variables, state enums, shared text helpers
 libexec/kdl.py            comment- and offset-preserving KDL editing
+libexec/tui.py            fzf picker; calls the CLI only through --json subprocesses
 libexec/carriers/         one module per carrier plus the registry
 tests/                    bats black-box tests
 ```

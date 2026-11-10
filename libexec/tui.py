@@ -16,6 +16,11 @@ import subprocess
 import sys
 
 FZF_MISSING = "proxysw: tui needs fzf; install fzf or set PROXYSW_FZF to its path"
+INTERRUPTED_DRY_RUN = "proxysw: interrupted; nothing was changed"
+# An apply is not atomic across carriers: the CLI writes one carrier at a
+# time, so an interrupt can leave some of them switched and the manifest
+# unsaved. Reporting a clean cancel would hide that.
+INTERRUPTED_APPLY = "proxysw: interrupted; run `proxysw status`"
 
 
 def _cli_path() -> str:
@@ -51,7 +56,10 @@ def _document(arguments: list[str]) -> tuple[int, dict | None, str]:
 
 
 def _status(proxy: str | None) -> dict | None:
-    arguments = ["status", "--json"]
+    # The picker always probes: the header's job is to tell "configured" apart
+    # from "something is listening", and a down endpoint is a warning, not a
+    # reason to refuse. The probe is bounded by the CLI's own timeout.
+    arguments = ["status", "--check", "--json"]
     if proxy:
         arguments += ["--proxy", proxy]
     code, document, stderr = _document(arguments)
@@ -65,16 +73,114 @@ def _status(proxy: str | None) -> dict | None:
     return document
 
 
+def _is_unmanaged(carrier: dict) -> bool:
+    return carrier.get("state") == "unmanaged"
+
+
+def _is_skipped(carrier: dict) -> bool:
+    """Excluded by config: named in the header, never a selectable row."""
+    return bool(carrier.get("skipped"))
+
+
 def _switchable(status: dict) -> list[dict]:
     return [
         carrier
         for carrier in status.get("carriers", [])
-        if not carrier.get("skipped") and carrier.get("state") != "unmanaged"
+        if not _is_skipped(carrier) and not _is_unmanaged(carrier)
     ]
 
 
+STATE_COLORS = {"on": "\x1b[32m", "off": "\x1b[33m"}
+COLOR_RESET = "\x1b[0m"
+
+
+def _colored_state(state: str) -> str:
+    # Colour is the fast way to scan a mixed list; fzf is told to interpret
+    # ANSI because the rows carry the escapes, not fzf itself.
+    color = STATE_COLORS.get(state)
+    return f"{color}{state}{COLOR_RESET}" if color else state
+
+
+def _flag_text(carrier: dict) -> str:
+    # Rows are already filtered to switchable carriers, so a skipped row can
+    # never reach this function; the header names excluded carriers instead.
+    # The flag comes from the structured ``pending_reload`` field rather than
+    # from substring-matching ``note``, which carries the CLI's own prose
+    # about the same fact.
+    return "reload pending" if carrier.get("pending_reload") else "-"
+
+
+# Row columns, in order. The list shows only the first three; the preview
+# reads the rest through fzf's numeric placeholders. Indices are derived from
+# this tuple so the row builder, ``--with-nth`` and the preview cannot drift
+# apart.
+ROW_COLUMNS = ("name", "state", "note", "path", "tools", "flags", "state_text")
+LIST_COLUMNS = ("name", "state", "note")
+PREVIEW_COLUMNS = ("path", "tools", "note", "flags", "state_text")
+
+
+def _placeholder(column: str) -> str:
+    return f"{{{ROW_COLUMNS.index(column) + 1}}}"
+
+
+WITH_NTH = ",".join(str(ROW_COLUMNS.index(column) + 1) for column in LIST_COLUMNS)
+
+KEY_HINTS = "Tab multi-select | Ctrl-A select all | Enter apply | Esc cancel"
+
+# fzf substitutes each {n} with the nth tab-separated field of the selected
+# row, shell-quoted. Only metadata from `status --json` is printed; the file
+# itself is never read, so npm/ssh credentials cannot reach the screen.
+PREVIEW_COMMAND = (
+    "printf 'path   %s\\ntools  %s\\nnote   %s\\nflags  %s\\nstate  %s\\n' "
+    + " ".join(_placeholder(column) for column in PREVIEW_COLUMNS)
+)
+
+
+def _row_values(carrier: dict) -> dict[str, str]:
+    return {
+        "name": carrier["name"],
+        "state": _colored_state(carrier["state"]),
+        "note": carrier.get("note") or "",
+        "path": carrier.get("path") or "",
+        "tools": ", ".join(carrier.get("tools") or []),
+        "flags": _flag_text(carrier),
+        "state_text": carrier["state"],
+    }
+
+
 def _rows(carriers: list[dict]) -> str:
-    return "".join(f"{carrier['name']}\t{carrier['state']}\n" for carrier in carriers)
+    """Tab-separated rows built in ``ROW_COLUMNS`` order.
+
+    fzf shows the first three fields (``--with-nth``) and keeps the rest as the
+    source for the preview's placeholders. Nothing here reads a carrier file:
+    every value comes from the ``status --json`` document.
+    """
+    lines = []
+    for carrier in carriers:
+        values = _row_values(carrier)
+        lines.append("\t".join(values[column] for column in ROW_COLUMNS) + "\n")
+    return "".join(lines)
+
+
+def _header(status: dict) -> str:
+    """Two unselectable header lines: context, then the keys that work.
+
+    docker and the carriers skipped by ``exclude`` are context, not choices:
+    the first is read-only and the second would be silently skipped by the
+    CLI, so neither may become a row the user can select.
+    """
+    probe = (status.get("check") or {}).get("state", "unknown")
+    line = f"endpoint {status['endpoint']}  {probe}"
+    for carrier in status.get("carriers", []):
+        if _is_unmanaged(carrier):
+            line += f" | {carrier['name']}: unmanaged (read-only)"
+    excluded = [
+        carrier["name"]
+        for carrier in status.get("carriers", [])
+        if _is_skipped(carrier)
+    ]
+    line += " | excluded: " + (", ".join(excluded) if excluded else "none")
+    return f"{line}\n{KEY_HINTS}"
 
 
 def _selected_names(stdout: str, carriers: list[dict]) -> list[str]:
@@ -106,6 +212,16 @@ def _confirm(effective: str, changed: list[str]) -> bool:
     if answer == "":
         return False
     return answer.strip().lower() in ("", "y", "yes")
+
+
+def _confirm_with_interrupt(effective: str, changed: list[str]) -> bool:
+    try:
+        return _confirm(effective, changed)
+    except KeyboardInterrupt:
+        # Ctrl-C answers the prompt with "no". It arrives before the apply
+        # call, so nothing has been written yet.
+        sys.stderr.write("\n")
+        return False
 
 
 def _report_outcome(document: dict, action: str) -> None:
@@ -141,7 +257,12 @@ def run(action: str, proxy: str | None) -> int:
         print(FZF_MISSING, file=sys.stderr)
         return 2
 
-    status = _status(proxy)
+    try:
+        status = _status(proxy)
+    except KeyboardInterrupt:
+        # The probe writes nothing, so this is the same safe cancel as Esc.
+        print("proxysw: cancelled", file=sys.stderr)
+        return 0
     if status is None:
         return 1
 
@@ -150,21 +271,45 @@ def run(action: str, proxy: str | None) -> int:
         print("proxysw: no switchable carriers", file=sys.stderr)
         return 0
 
-    completed = subprocess.run(
-        [
-            fzf,
-            "--multi",
-            "--layout=reverse",
-            "--prompt",
-            f"proxysw {action}> ",
-            "--bind",
-            "ctrl-a:select-all",
-        ],
-        input=_rows(carriers),
-        capture_output=True,
-        text=True,
-        encoding="utf-8",
-    )
+    try:
+        completed = subprocess.run(
+            [
+                fzf,
+                "--multi",
+                "--ansi",
+                "--layout=reverse",
+                "--delimiter=\\t",
+                # The list shows only name, state and note; path, tools and
+                # flags stay in the row for the preview, which reads the raw
+                # fields.
+                f"--with-nth={WITH_NTH}",
+                "--prompt",
+                f"proxysw {action}> ",
+                "--bind",
+                "ctrl-a:select-all",
+                "--header",
+                _header(status),
+                "--preview",
+                PREVIEW_COMMAND,
+                "--preview-window=right:50%",
+            ],
+            input=_rows(carriers),
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+        )
+    except OSError as error:
+        # The binary was executable enough for `which` but exec still failed
+        # (bad interpreter, wrong architecture). That is a broken optional
+        # dependency, not a switch failure, so keep it a usage error.
+        print(f"proxysw: could not start fzf: {error}", file=sys.stderr)
+        return 2
+    except KeyboardInterrupt:
+        # Ctrl-C reaches the picker as well as fzf, which share the foreground
+        # process group; subprocess.run has already killed the child. Nothing
+        # has been written yet, so this is the same cancel as fzf exiting 130.
+        print("proxysw: cancelled", file=sys.stderr)
+        return 0
     if completed.returncode == 130:
         print("proxysw: cancelled", file=sys.stderr)
         return 0
@@ -182,7 +327,13 @@ def run(action: str, proxy: str | None) -> int:
         print("proxysw: nothing selected", file=sys.stderr)
         return 0
 
-    code, plan, stderr = _switch(action, names, proxy, dry_run=True)
+    try:
+        code, plan, stderr = _switch(action, names, proxy, dry_run=True)
+    except KeyboardInterrupt:
+        # The plan is a preview, so no carrier changed; but the command did not
+        # finish its own job, so it is not the clean 0-exit cancel path either.
+        print(INTERRUPTED_DRY_RUN, file=sys.stderr)
+        return 1
     if plan is None:
         if stderr:
             sys.stderr.write(stderr)
@@ -201,11 +352,15 @@ def run(action: str, proxy: str | None) -> int:
         print("nothing to change")
         return 0
 
-    if not _confirm(plan["action"], changed):
+    if not _confirm_with_interrupt(plan["action"], changed):
         print("proxysw: cancelled", file=sys.stderr)
         return 0
 
-    code, result, stderr = _switch(action, names, proxy, dry_run=False)
+    try:
+        code, result, stderr = _switch(action, names, proxy, dry_run=False)
+    except KeyboardInterrupt:
+        print(INTERRUPTED_APPLY, file=sys.stderr)
+        return 1
     if result is None:
         if stderr:
             sys.stderr.write(stderr)
