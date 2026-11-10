@@ -39,6 +39,12 @@ STUB
   # The picker is the TUI's only external collaborator besides the CLI. This
   # stub drains the list it is fed, records it, and prints whatever selection
   # the test asked for. Tests never need a terminal.
+  #
+  # It also emulates the one fzf behaviour the preview depends on: when
+  # STUB_FZF_PREVIEW_LOG is set, it runs the --preview command once per row
+  # with {n} replaced by that row's nth tab-separated field, and appends the
+  # output to the log. That is fzf's documented placeholder substitution, so a
+  # test can inspect the real preview text without a pty or a real fzf.
   cat > "$FIXTURE_ROOT/bin/fzf" <<'STUB'
 #!/usr/bin/env bash
 set -euo pipefail
@@ -46,11 +52,43 @@ set -euo pipefail
 if [ -n "${STUB_FZF_ARGV_LOG:-}" ]; then
   printf '%s\n' "$@" > "$STUB_FZF_ARGV_LOG"
 fi
+
+input="$(cat)"
 if [ -n "${STUB_FZF_STDIN_LOG:-}" ]; then
-  cat > "$STUB_FZF_STDIN_LOG"
-else
-  cat > /dev/null
+  printf '%s\n' "$input" > "$STUB_FZF_STDIN_LOG"
 fi
+
+if [ -n "${STUB_FZF_PREVIEW_LOG:-}" ]; then
+  preview=""
+  previous=""
+  for argument in "$@"; do
+    if [ "$previous" = "--preview" ]; then
+      preview="$argument"
+    fi
+    previous="$argument"
+  done
+  # Bash 5.2 turns `&` in a substitution replacement into the matched text;
+  # fzf does not, and neither does this stub.
+  shopt -u patsub_replacement 2>/dev/null || true
+  if [ -n "$input" ]; then
+    while IFS= read -r row; do
+      fields=()
+      rest="$row"
+      while [[ "$rest" == *$'\t'* ]]; do
+        fields+=("${rest%%$'\t'*}")
+        rest="${rest#*$'\t'}"
+      done
+      fields+=("$rest")
+      rendered="$preview"
+      for index in "${!fields[@]}"; do
+        printf -v quoted '%q' "${fields[$index]}"
+        rendered="${rendered//\{$((index + 1))\}/$quoted}"
+      done
+      sh -c "$rendered" >> "$STUB_FZF_PREVIEW_LOG"
+    done <<< "$input"
+  fi
+fi
+
 if [ -n "${STUB_FZF_EXIT:-}" ]; then
   exit "$STUB_FZF_EXIT"
 fi

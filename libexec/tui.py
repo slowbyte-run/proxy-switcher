@@ -51,7 +51,10 @@ def _document(arguments: list[str]) -> tuple[int, dict | None, str]:
 
 
 def _status(proxy: str | None) -> dict | None:
-    arguments = ["status", "--json"]
+    # The picker always probes: the header's job is to tell "configured" apart
+    # from "something is listening", and a down endpoint is a warning, not a
+    # reason to refuse. The probe is bounded by the CLI's own timeout.
+    arguments = ["status", "--check", "--json"]
     if proxy:
         arguments += ["--proxy", proxy]
     code, document, stderr = _document(arguments)
@@ -73,8 +76,78 @@ def _switchable(status: dict) -> list[dict]:
     ]
 
 
+STATE_COLORS = {"on": "\x1b[32m", "off": "\x1b[33m"}
+COLOR_RESET = "\x1b[0m"
+
+
+def _colored_state(state: str) -> str:
+    # Colour is the fast way to scan a mixed list; fzf is told to interpret
+    # ANSI because the rows carry the escapes, not fzf itself.
+    color = STATE_COLORS.get(state)
+    return f"{color}{state}{COLOR_RESET}" if color else state
+
+
+def _flags(carrier: dict) -> str:
+    flags = []
+    if carrier.get("pending_reload"):
+        flags.append("reload pending")
+    if carrier.get("skipped"):
+        flags.append("excluded")
+    return ", ".join(flags) or "-"
+
+
 def _rows(carriers: list[dict]) -> str:
-    return "".join(f"{carrier['name']}\t{carrier['state']}\n" for carrier in carriers)
+    """Tab-separated rows: name, coloured state, note, path, tools, flags, state.
+
+    fzf shows the first three fields (``--with-nth``) and keeps the rest as the
+    source for the preview's placeholders. Nothing here reads a carrier file:
+    every value comes from the ``status --json`` document.
+    """
+    lines = []
+    for carrier in carriers:
+        fields = [
+            carrier["name"],
+            _colored_state(carrier["state"]),
+            carrier.get("note") or "",
+            carrier.get("path") or "",
+            ", ".join(carrier.get("tools") or []),
+            _flags(carrier),
+            carrier["state"],
+        ]
+        lines.append("\t".join(fields) + "\n")
+    return "".join(lines)
+
+
+KEY_HINTS = "Tab multi-select | Ctrl-A select all | Enter apply | Esc cancel"
+
+# fzf substitutes each {n} with the nth tab-separated field of the selected
+# row, shell-quoted. Only metadata from `status --json` is printed; the file
+# itself is never read, so npm/ssh credentials cannot reach the screen.
+PREVIEW_COMMAND = (
+    "printf 'path   %s\\ntools  %s\\nnote   %s\\nflags  %s\\nstate  %s\\n'"
+    " {4} {5} {3} {6} {7}"
+)
+
+
+def _header(status: dict) -> str:
+    """Two unselectable header lines: context, then the keys that work.
+
+    docker and the carriers skipped by ``exclude`` are context, not choices:
+    the first is read-only and the second would be silently skipped by the
+    CLI, so neither may become a row the user can select.
+    """
+    probe = (status.get("check") or {}).get("state", "unknown")
+    line = f"endpoint {status['endpoint']}  {probe}"
+    for carrier in status.get("carriers", []):
+        if carrier.get("state") == "unmanaged":
+            line += f" | {carrier['name']}: unmanaged (read-only)"
+    excluded = [
+        carrier["name"]
+        for carrier in status.get("carriers", [])
+        if carrier.get("skipped")
+    ]
+    line += " | excluded: " + (", ".join(excluded) if excluded else "none")
+    return f"{line}\n{KEY_HINTS}"
 
 
 def _selected_names(stdout: str, carriers: list[dict]) -> list[str]:
@@ -154,11 +227,21 @@ def run(action: str, proxy: str | None) -> int:
         [
             fzf,
             "--multi",
+            "--ansi",
             "--layout=reverse",
+            "--delimiter=\\t",
+            # The list shows only name, state and note; path, tools and flags
+            # stay in the row for the preview, which reads the raw fields.
+            "--with-nth=1,2,3",
             "--prompt",
             f"proxysw {action}> ",
             "--bind",
             "ctrl-a:select-all",
+            "--header",
+            _header(status),
+            "--preview",
+            PREVIEW_COMMAND,
+            "--preview-window=right:50%",
         ],
         input=_rows(carriers),
         capture_output=True,
