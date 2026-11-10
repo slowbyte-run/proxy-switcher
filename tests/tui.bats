@@ -158,6 +158,39 @@ setup() {
   [ "$(snapshot_tree "$HOME" "$XDG_CONFIG_HOME" "$XDG_STATE_HOME")" = "$before" ]
 }
 
+@test "Ctrl-C during the apply exits 1 and asks for a status check" {
+  write_all_carriers_off
+  export STUB_FZF_OUTPUT="niri"
+  # Interrupt from the niri post-write hook: the stub runs after niri's file
+  # has been written but while the picker is still blocked on the apply
+  # subprocess. The picker is the stub's grandparent (stub -> CLI -> picker),
+  # so the SIGINT lands exactly there instead of racing a timer against the
+  # transaction. The CLI is the stub's parent and is killed by the picker.
+  cat > "$FIXTURE_ROOT/bin/niri" <<'STUB'
+#!/usr/bin/env bash
+printf '%s\n' "$*" >> "$NIRI_STUB_LOG"
+exec >/dev/null 2>&1
+kill -INT "$(ps -o ppid= -p "$PPID" | tr -d ' ')"
+sleep 1
+STUB
+  chmod +x "$FIXTURE_ROOT/bin/niri"
+
+  # bats' parallel runner can start tests as asynchronous jobs, which leaves
+  # SIGINT ignored in pipeline members; reset it so the signal exercises the
+  # picker's handler instead of an inherited SIG_IGN.
+  run bash -c 'printf "y\n" | env --default-signal=INT "$PROXYSW_BIN" tui'
+
+  [ "$status" -eq 1 ]
+  [[ "$output" == *"interrupted"* ]]
+  [[ "$output" == *"proxysw status"* ]]
+  [[ "$output" != *"Traceback"* ]]
+  # niri was written before the interrupt: the run must not claim a clean
+  # cancel, and the later carriers plus the manifest were never committed.
+  grep -qF 'http_proxy "http://127.0.0.1:7890"' "$(niri_config_path)"
+  ! grep -q '^proxy=' "$(npmrc_path)"
+  [ ! -e "$(proxy_manifest_path)" ]
+}
+
 @test "missing fzf exits 2 without writing" {
   write_all_carriers_off
   export PROXYSW_FZF="$FIXTURE_ROOT/no-such-fzf"
@@ -287,10 +320,26 @@ TOML
   write_all_carriers_off
   export STUB_FZF_OUTPUT="npm"
 
-  run bash -c 'printf "y\n" | "$PROXYSW_BIN" tui --proxy http://127.0.0.1:9999'
+  run bash -c 'printf "y\n" | "$PROXYSW_BIN" tui --proxy http://127.0.0.1:9'
 
   [ "$status" -eq 0 ]
-  grep -q '^proxy=http://127.0.0.1:9999$' "$(npmrc_path)"
+  grep -q '^proxy=http://127.0.0.1:9$' "$(npmrc_path)"
+}
+
+@test "--proxy reaches the dry-run plan, not only the apply" {
+  write_all_carriers_off
+  write_npm_on
+  export STUB_FZF_OUTPUT="npm"
+
+  # npm already holds the configured 7890 endpoint. A dry run that forgot
+  # --proxy would plan no change, print "nothing to change" and never call
+  # apply; the replacement bytes at :9 prove the dry-run call carried it.
+  run bash -c 'printf "y\n" | "$PROXYSW_BIN" tui on --proxy http://127.0.0.1:9'
+
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"Will turn on: npm"* ]]
+  grep -q '^proxy=http://127.0.0.1:9$' "$(npmrc_path)"
+  grep -q '^https-proxy=http://127.0.0.1:9$' "$(npmrc_path)"
 }
 
 @test "tui exits 0 without opening fzf when every carrier is excluded" {
@@ -320,8 +369,9 @@ TOML
   run_proxysw tui
 
   [ "$status" -eq 0 ]
-  grep -qF 'http://127.0.0.1:9' "$STUB_FZF_ARGV_LOG"
-  grep -qF 'down' "$STUB_FZF_ARGV_LOG"
+  # Port 9 stays closed unless something unusual is running locally, and the
+  # whole endpoint field is asserted so a bare "down" elsewhere cannot pass.
+  grep -qF 'endpoint http://127.0.0.1:9  down' "$STUB_FZF_ARGV_LOG"
   grep -qF 'docker: unmanaged' "$STUB_FZF_ARGV_LOG"
   grep -qF 'excluded: ssh' "$STUB_FZF_ARGV_LOG"
   grep -qF 'Tab' "$STUB_FZF_ARGV_LOG"
@@ -421,10 +471,9 @@ TOML
   export STUB_FZF_OUTPUT="npm"
   export STUB_FZF_ARGV_LOG="$FIXTURE_ROOT/fzf-argv.log"
 
-  run bash -c 'printf "y\n" | "$PROXYSW_BIN" tui --proxy http://127.0.0.1:9999'
+  run bash -c 'printf "y\n" | "$PROXYSW_BIN" tui --proxy http://127.0.0.1:9'
 
   [ "$status" -eq 0 ]
-  grep -qF 'endpoint http://127.0.0.1:9999' "$STUB_FZF_ARGV_LOG"
-  grep -qF 'down' "$STUB_FZF_ARGV_LOG"
-  grep -q '^proxy=http://127.0.0.1:9999$' "$(npmrc_path)"
+  grep -qF 'endpoint http://127.0.0.1:9  down' "$STUB_FZF_ARGV_LOG"
+  grep -q '^proxy=http://127.0.0.1:9$' "$(npmrc_path)"
 }

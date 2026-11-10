@@ -177,6 +177,7 @@ proxysw restore
 - **可选依赖**：`fzf` 是唯一的外部程序，且只影响 `tui`；核心命令仍只依赖 Python 标准库。fzf 缺失时以用法错误（退出码 2）结束，可用 `PROXYSW_FZF` 指定 fzf 路径。
 - **`--json` 的例外**：`--json` 只适用于非交互命令。`tui` 拒绝 `--json`、`--dry-run`、`--force`、`--verbose`、`--check`、`--short`、`--require-up` 和 `--shell`，只接受一个可选动作与 `--proxy`。
 - **消费者边界**：`tui` 通过 `proxysw ... --json` 子进程读取状态、预览计划并应用开关；它不 import 引擎、状态 helper 或载体注册表，也不直接写载体文件。因此仍然只有一个写者、一份 JSON 契约（schema 保持 2），锁、冲突检测与原子写入都在 CLI 一侧。
+- **中断**：在列表或确认行按 Ctrl-C 等于取消（退出码 0，不写盘）；apply 期间被中断则以退出码 1 结束并提示运行 `proxysw status`，因为多载体开关可能已经写入了一部分。
 - **已知限制**：首版只做查看与开关；`restore`、冲突时的 `--force`、端点与 `no_proxy` 编辑仍走 CLI。
 
 真实 fzf 的渲染、键位和窄终端表现无法由 stub 覆盖，发布前按[真实 fzf 人工冒烟清单](docs/tui-manual-smoke.md)在真实终端逐项确认。

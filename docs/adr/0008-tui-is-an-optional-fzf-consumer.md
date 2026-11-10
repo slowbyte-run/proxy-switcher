@@ -21,6 +21,7 @@ fzf 是唯一新增的外部程序，而且只影响 `tui` 这一条路径：核
 - 首版只做查看与开关；`restore`、冲突 `--force`、端点/`no_proxy` 编辑仍走 CLI。
 - 不新增 JSON 字段，schema 保持 2；TUI 只消费现有 `status` 与开关文档。
 - fzf 只用长期存在的选项，不设版本下限；测试用 stub fzf，真实渲染靠人工冒烟。
+- 打开选择器总是执行 `status --check --json`，因此看到的是打开时刻的最新状态。探测是一次 ≤0.5 秒的本地 TCP 连接（不写字节、不发 HTTP 请求）；`--proxy` 同时作用于探测、dry-run 和 apply。端点 `down` 只是警告，不阻塞选择或开关：用户可以先准备好载体，再启动代理。
 - fzf 的查找顺序是 `PROXYSW_FZF` 指定的路径，否则 `PATH`；两者都没有时 `tui` 以用法错误退出。`PROXYSW_FZF` 也用于测试里模拟缺失。
 - TUI 是独立进程：逐载体结果走 stdout，确认行、提示和错误走 stderr；它不复用 CLI 的 `context.info`/`progress`/`emit_document` 通道。结果行里的「已写」以 apply 文档的 `written` 为准，`changed` 只表示计划想改。
 - TUI 一次确认只发起一次写盘开关调用；多选仍是一个开关事务，不逐载体翻转。

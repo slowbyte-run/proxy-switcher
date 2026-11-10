@@ -58,12 +58,12 @@ already enforces, so a reviewer can skip re-checking those by eye.
 - Every bats test must call `fixture_init`. It points `HOME`, `XDG_CONFIG_HOME`, `XDG_STATE_HOME` and `XDG_RUNTIME_DIR` at `$BATS_TEST_TMPDIR`, pins `SHELL=/bin/zsh`, puts stub `niri` and `fzf` first on `PATH`, and exports `PROXYSW_BIN`.
 - Tests stay offline, avoid sudo, and touch only the fixture tree.
 - Add per-carrier tests in `tests/<carrier>.bats` and cross-carrier behaviour in `tests/aggregate.bats`. Launch/install behaviour goes in `tests/launcher.bats`; architecture rules go in `tests/contract.bats`; the `--json` field snapshots go in `tests/schema.bats`; the switch lock goes in `tests/lock.bats`; the endpoint probe goes in `tests/check.bats`.
-- TUI black-box tests live in `tests/tui.bats`. The real fzf is replaced by the fixture stub (it records argv/stdin, can emulate the preview, and returns a configured exit code or selection); tests assert only CLI calls, output and bytes on disk. Real fzf rendering, keys and narrow terminals are a manual checklist in `docs/tui-manual-smoke.md`, not a gate.
+- TUI black-box tests live in `tests/tui.bats`. The real fzf is replaced by the fixture stub (it records argv/stdin, can emulate the preview, and returns a configured exit code or selection); tests assert CLI calls, output, bytes on disk, and the stub fzf's argv and emulated preview — with the fixture's stub fzf as the other collaborator. Real fzf rendering, keys and narrow terminals are a manual checklist in `docs/tui-manual-smoke.md`, not a gate.
 - `run_proxysw` is `run`, which merges stderr into `$output`. When a test asserts on a `--json` document, capture stdout alone (`run bash -c '"$PROXYSW_BIN" ... 2>/dev/null'`) — otherwise a stray note makes `jq` fail and the assertion stops meaning what it says.
 
 ## Conventions
 
 - Exit codes: `0` success, `1` conflict or execution failure, `2` usage error.
 - Code and code comments are English; docs, commit messages and issue text are Chinese.
-- Commit subjects carry a type prefix — `feat:`, `fix:`, `style:`, `chore:`, and `feat!:` for a breaking change (the `proxy` → `proxysw` rename), with the subject in Chinese and the body explaining why.
+- Commit subjects carry a type prefix — `feat:`, `fix:`, `style:`, `chore:`, and `feat!:` for a breaking change (the `proxy` → `proxysw` rename), with the subject in Chinese and the body explaining why. Merge commits are the exception: they use `merge:` plus the merged topic in Chinese, and need no body because the merged commits carry the reasoning. Existing merge commits keep their subjects; do not rewrite history to fit this line.
 - Work is tracked as GitHub issues and closed with a comment plus `gh issue close`.
