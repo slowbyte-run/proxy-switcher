@@ -181,6 +181,16 @@ def _confirm(effective: str, changed: list[str]) -> bool:
     return answer.strip().lower() in ("", "y", "yes")
 
 
+def _confirm_with_interrupt(effective: str, changed: list[str]) -> bool:
+    try:
+        return _confirm(effective, changed)
+    except KeyboardInterrupt:
+        # Ctrl-C answers the prompt with "no". It arrives before the apply
+        # call, so nothing has been written yet.
+        sys.stderr.write("\n")
+        return False
+
+
 def _report_outcome(document: dict, action: str) -> None:
     effective = document.get("action") or action
     failed = {failure["carrier"] for failure in document.get("failures") or []}
@@ -223,31 +233,45 @@ def run(action: str, proxy: str | None) -> int:
         print("proxysw: no switchable carriers", file=sys.stderr)
         return 0
 
-    completed = subprocess.run(
-        [
-            fzf,
-            "--multi",
-            "--ansi",
-            "--layout=reverse",
-            "--delimiter=\\t",
-            # The list shows only name, state and note; path, tools and flags
-            # stay in the row for the preview, which reads the raw fields.
-            "--with-nth=1,2,3",
-            "--prompt",
-            f"proxysw {action}> ",
-            "--bind",
-            "ctrl-a:select-all",
-            "--header",
-            _header(status),
-            "--preview",
-            PREVIEW_COMMAND,
-            "--preview-window=right:50%",
-        ],
-        input=_rows(carriers),
-        capture_output=True,
-        text=True,
-        encoding="utf-8",
-    )
+    try:
+        completed = subprocess.run(
+            [
+                fzf,
+                "--multi",
+                "--ansi",
+                "--layout=reverse",
+                "--delimiter=\\t",
+                # The list shows only name, state and note; path, tools and
+                # flags stay in the row for the preview, which reads the raw
+                # fields.
+                "--with-nth=1,2,3",
+                "--prompt",
+                f"proxysw {action}> ",
+                "--bind",
+                "ctrl-a:select-all",
+                "--header",
+                _header(status),
+                "--preview",
+                PREVIEW_COMMAND,
+                "--preview-window=right:50%",
+            ],
+            input=_rows(carriers),
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+        )
+    except OSError as error:
+        # The binary was executable enough for `which` but exec still failed
+        # (bad interpreter, wrong architecture). That is a broken optional
+        # dependency, not a switch failure, so keep it a usage error.
+        print(f"proxysw: could not start fzf: {error}", file=sys.stderr)
+        return 2
+    except KeyboardInterrupt:
+        # Ctrl-C reaches the picker as well as fzf, which share the foreground
+        # process group; subprocess.run has already killed the child. Nothing
+        # has been written yet, so this is the same cancel as fzf exiting 130.
+        print("proxysw: cancelled", file=sys.stderr)
+        return 0
     if completed.returncode == 130:
         print("proxysw: cancelled", file=sys.stderr)
         return 0
@@ -284,7 +308,7 @@ def run(action: str, proxy: str | None) -> int:
         print("nothing to change")
         return 0
 
-    if not _confirm(plan["action"], changed):
+    if not _confirm_with_interrupt(plan["action"], changed):
         print("proxysw: cancelled", file=sys.stderr)
         return 0
 

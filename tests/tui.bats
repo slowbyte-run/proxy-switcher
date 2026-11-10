@@ -80,6 +80,84 @@ setup() {
   [ "$(snapshot_tree "$HOME" "$XDG_CONFIG_HOME" "$XDG_STATE_HOME")" = "$before" ]
 }
 
+@test "duplicate and unknown selection rows are dropped" {
+  write_all_carriers_off
+  # fzf can emit a row twice (Tab then re-select), and a stale/malformed row is
+  # not a carrier name. Only known switchable names reach the CLI, once each.
+  export STUB_FZF_OUTPUT=$'npm\nbogus\ndocker\nnpm\n'
+
+  run bash -c 'printf "y\n" | "$PROXYSW_BIN" tui'
+
+  [ "$status" -eq 0 ]
+  [ "$(printf '%s\n' "$output" | grep -o 'npm: on' | wc -l)" -eq 1 ]
+  grep -q '^proxy=http://127.0.0.1:7890$' "$(npmrc_path)"
+}
+
+@test "a selection of only unknown rows writes nothing" {
+  write_all_carriers_off
+  export STUB_FZF_OUTPUT=$'docker\nbogus'
+  local before
+  before="$(snapshot_tree "$HOME" "$XDG_CONFIG_HOME" "$XDG_STATE_HOME")"
+
+  run_proxysw tui
+
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"nothing selected"* ]]
+  [ "$(snapshot_tree "$HOME" "$XDG_CONFIG_HOME" "$XDG_STATE_HOME")" = "$before" ]
+}
+
+@test "Ctrl-C in the picker cancels without writing" {
+  write_all_carriers_off
+  # fzf exits 130 when it catches the interrupt; the picker maps that to a
+  # cancel rather than a failure.
+  export STUB_FZF_EXIT=130
+  local before
+  before="$(snapshot_tree "$HOME" "$XDG_CONFIG_HOME" "$XDG_STATE_HOME")"
+
+  run_proxysw tui
+
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"cancelled"* ]]
+  [ "$(snapshot_tree "$HOME" "$XDG_CONFIG_HOME" "$XDG_STATE_HOME")" = "$before" ]
+}
+
+@test "Ctrl-C at the confirmation cancels without writing" {
+  write_all_carriers_off
+  export STUB_FZF_OUTPUT="npm"
+  local before fifo
+  before="$(snapshot_tree "$HOME" "$XDG_CONFIG_HOME" "$XDG_STATE_HOME")"
+  fifo="$FIXTURE_ROOT/confirmation.fifo"
+  mkfifo "$fifo"
+  # Hold the write end open so the picker blocks in the confirmation instead of
+  # reading EOF. The command runs in the foreground of `timeout`; a background
+  # job would inherit SIGINT ignored and never see the interrupt.
+  exec 9<> "$fifo"
+
+  run timeout --preserve-status --signal=INT 2 "$PROXYSW_BIN" tui < "$fifo"
+
+  exec 9>&-
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"apply?"* ]]
+  [[ "$output" == *"cancelled"* ]]
+  [ "$(snapshot_tree "$HOME" "$XDG_CONFIG_HOME" "$XDG_STATE_HOME")" = "$before" ]
+}
+
+@test "Ctrl-C while fzf is open cancels without writing" {
+  write_all_carriers_off
+  # Leave fzf running until the interrupt arrives: the terminal sends Ctrl-C
+  # to the picker and to fzf together, so the picker itself must also treat
+  # the interrupt as a cancel.
+  export STUB_FZF_SLEEP=5
+  local before
+  before="$(snapshot_tree "$HOME" "$XDG_CONFIG_HOME" "$XDG_STATE_HOME")"
+
+  run timeout --preserve-status --signal=INT 2 "$PROXYSW_BIN" tui
+
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"cancelled"* ]]
+  [ "$(snapshot_tree "$HOME" "$XDG_CONFIG_HOME" "$XDG_STATE_HOME")" = "$before" ]
+}
+
 @test "missing fzf exits 2 without writing" {
   write_all_carriers_off
   export PROXYSW_FZF="$FIXTURE_ROOT/no-such-fzf"
@@ -90,6 +168,61 @@ setup() {
 
   [ "$status" -eq 2 ]
   [[ "$output" == *"needs fzf"* ]]
+  [ "$(snapshot_tree "$HOME" "$XDG_CONFIG_HOME" "$XDG_STATE_HOME")" = "$before" ]
+}
+
+@test "an fzf that cannot start exits 2 without writing" {
+  write_all_carriers_off
+  # A file that exists and is executable, but whose interpreter does not:
+  # exec fails before fzf ever sees a row.
+  local broken_fzf="$FIXTURE_ROOT/bin/broken-fzf"
+  printf '#!/no/such/interpreter\n' > "$broken_fzf"
+  chmod +x "$broken_fzf"
+  export PROXYSW_FZF="$broken_fzf"
+  local before
+  before="$(snapshot_tree "$HOME" "$XDG_CONFIG_HOME" "$XDG_STATE_HOME")"
+
+  run_proxysw tui
+
+  [ "$status" -eq 2 ]
+  [[ "$output" == *"could not start fzf"* ]]
+  [ "$(snapshot_tree "$HOME" "$XDG_CONFIG_HOME" "$XDG_STATE_HOME")" = "$before" ]
+}
+
+@test "fzf failing on a non-interactive terminal exits 2 without writing" {
+  write_all_carriers_off
+  # This is how fzf itself behaves without a tty. The picker deliberately does
+  # not pre-check the terminal: it lets fzf fail and forwards the message.
+  export STUB_FZF_EXIT=2
+  export STUB_FZF_STDERR="failed to open /dev/tty: No such device or address"
+  local before
+  before="$(snapshot_tree "$HOME" "$XDG_CONFIG_HOME" "$XDG_STATE_HOME")"
+
+  run_proxysw tui
+
+  [ "$status" -eq 2 ]
+  [[ "$output" == *"failed to open /dev/tty"* ]]
+  [[ "$output" == *"fzf failed"* ]]
+  [ "$(snapshot_tree "$HOME" "$XDG_CONFIG_HOME" "$XDG_STATE_HOME")" = "$before" ]
+}
+
+@test "an invalid config exits 1 with the CLI error and never opens fzf" {
+  write_all_carriers_off
+  # The TUI reads state through `status --json`; a config that CLI rejects must
+  # surface the same message and exit code instead of being swallowed or shown
+  # as a crash.
+  write_proxy_config <<'TOML'
+endpoint = "socks5://127.0.0.1:7890"
+TOML
+  export STUB_FZF_ARGV_LOG="$FIXTURE_ROOT/fzf-argv.log"
+  local before
+  before="$(snapshot_tree "$HOME" "$XDG_CONFIG_HOME" "$XDG_STATE_HOME")"
+
+  run_proxysw tui
+
+  [ "$status" -eq 1 ]
+  [[ "$output" == *"must be an http URL"* ]]
+  [ ! -e "$STUB_FZF_ARGV_LOG" ]
   [ "$(snapshot_tree "$HOME" "$XDG_CONFIG_HOME" "$XDG_STATE_HOME")" = "$before" ]
 }
 
@@ -110,16 +243,25 @@ setup() {
   grep -q '^# edited by hand$' "$(npmrc_path)"
 }
 
-@test "a partial failure names the failed carrier and exits 1" {
+@test "a partial failure names the failed carrier, applies the rest and exits 1" {
   write_all_carriers_off
+  local npm_before
+  npm_before="$(cat "$(npmrc_path)")"
+  # Keep the state directory writable: the npm file lives directly in HOME and
+  # fails to write there, while niri's file sits in a writable subdirectory.
+  # That is one carrier failing and another succeeding in the same transaction.
+  mkdir -p "$XDG_STATE_HOME"
   chmod 500 "$HOME"
   trap 'chmod 700 "$HOME"' EXIT
-  export STUB_FZF_OUTPUT="npm"
+  export STUB_FZF_OUTPUT=$'npm\nniri'
 
   run bash -c 'printf "y\n" | "$PROXYSW_BIN" tui'
 
   [ "$status" -eq 1 ]
   [[ "$output" == *"npm: failed"* ]]
+  [[ "$output" == *"niri: on"* ]]
+  [ "$(cat "$(npmrc_path)")" = "$npm_before" ]
+  grep -qF 'http_proxy "http://127.0.0.1:7890"' "$(niri_config_path)"
   chmod 700 "$HOME"
   trap - EXIT
 }

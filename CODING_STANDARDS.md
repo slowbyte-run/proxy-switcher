@@ -48,6 +48,14 @@ tests encode the current behaviour, not the reasoning.
   before `load_manifest` because the conflict window sits between the read and
   the write; it lives in `$XDG_RUNTIME_DIR` so a switch that writes nothing
   leaves the state directory untouched. See ADR 0007.
+- **The TUI is a consumer of the CLI, not a second writer.** `libexec/tui.py`
+  runs `proxysw ... --json` subprocesses; it does not import `proxy_engine`,
+  `proxy_helper` or `carriers`, and it does not write a carrier file. Reaching
+  into the engine "to save one subprocess" would bypass the lock, snapshot,
+  conflict detection and atomic write, and would make an fzf UI a second
+  writer. `tests/contract.bats` guards the import half; `tests/tui.bats`
+  observes only CLI calls, output and bytes on disk, with the fixture's stub
+  fzf as the other collaborator. See ADR 0008.
 
 ## Rules with a known soft edge
 
@@ -78,6 +86,11 @@ and when the number moves without the snapshot. What it cannot judge:
 - Whether a value that used to be prose in `note` should now be a real field.
   It generally should: `pending_reload` was a phrase a consumer had to
   substring-match until it became a boolean.
+- Whether a new command should be scriptable. `tui` deliberately is not: it
+  rejects `--json`, `--dry-run`, `--force`, `--verbose`, `--check`, `--short`,
+  `--require-up` and `--shell`, and only accepts an optional action plus
+  `--proxy`. It consumes the same documents as any other wrapper, which is why
+  the schema stayed at 2 for #11–#13.
 
 ## Architectural boundaries a reviewer should hold
 
@@ -91,6 +104,10 @@ and when the number moves without the snapshot. What it cannot judge:
   under `--json`) or `emit_document` (the single JSON document). A new channel
   is a design change, not a convenience. `tests/contract.bats` enforces the
   bare-`print` half of this inside `carriers/` only.
+- `libexec/tui.py` may spawn the launcher and parse its `--json` documents; it
+  may not import the engine, the state helper or the carrier registry, and may
+  not write a carrier file. Its only external collaborator besides the CLI is
+  fzf, which tests replace with the shared stub.
 
 ## Already enforced by the suite — do not re-review by eye
 
@@ -106,6 +123,7 @@ that is the finding.
 | No `carriers/` module calls bare `print` | `tests/contract.bats` |
 | Exit codes stay `0` / `1` / `2` | `tests/contract.bats` |
 | Every test uses the fixture and no real system path | `tests/contract.bats` |
+| The TUI never imports the engine, helper or carriers | `tests/contract.bats` |
 | `--json` field sets and the schema number agree | `tests/schema.bats` |
 | npm keeps mode 0600 and replaces keys in place | `tests/npm.bats` |
 | ssh leaves every other Host block byte-identical | `tests/ssh.bats` (`ssh -G`) |
