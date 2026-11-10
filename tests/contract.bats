@@ -138,3 +138,12 @@ TOML
   run_proxysw status
   [ "$status" -eq 1 ]
 }
+
+@test "the TUI module never imports the engine, helper or carriers" {
+  # The picker is a consumer of the CLI's --json documents. Reaching into the
+  # engine or the carrier registry would create a second writer and a second
+  # place that knows how a switch is planned.
+  run grep -nE '^[[:space:]]*(import|from) (proxy_engine|proxy_helper|carriers)' \
+    "$REPO_ROOT/libexec/tui.py"
+  [ "$status" -ne 0 ]
+}

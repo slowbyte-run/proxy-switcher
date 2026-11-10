@@ -13,6 +13,7 @@ from urllib.parse import urlsplit
 
 import proxy_engine
 import proxy_helper
+import tui
 from carriers import managed_names
 from proxy_common import SHELL_CHOICES, VERSION, Action
 from proxy_engine import Context, EngineError, UsageError
@@ -28,10 +29,11 @@ Commands:
                         Show the state of every proxy carrier
   env [--shell <name>] [--json]
                         Print export/unset statements for eval
+  tui [on|off|toggle]   Pick carriers interactively and apply the action
 
 Options:
   --proxy <url>         Override the configured proxy endpoint (all commands)
-  --json                Machine-readable output (every command)
+  --json                Machine-readable output (non-interactive commands)
   -V, --version         Show the version and exit
   -h, --help            Show this help
 
@@ -48,6 +50,11 @@ Options for status:
 Options for env:
   --shell <name>        bash, zsh or fish (default: from $SHELL)
 
+tui:
+  Needs fzf and an interactive terminal. Set PROXYSW_FZF to use a specific
+  fzf binary. It accepts only --proxy and an optional action, so it is not
+  scriptable and has no --json.
+
 Configuration:
   $XDG_CONFIG_HOME/proxy-switcher/config.toml accepts endpoint, no_proxy
   and exclude (a list of carrier names to leave alone).
@@ -62,12 +69,17 @@ SWITCH_COMMANDS = {
     "restore": Action.RESTORE,
 }
 READ_COMMANDS = {"status", "env"}
+INTERACTIVE_COMMANDS = {"tui"}
+# restore stays CLI-only: the picker applies a switch, not a rollback.
+TUI_ACTIONS = ("on", "off", "toggle")
 
 
 @dataclass
 class Parsed:
     command: str | None = None
     carriers: list[str] | None = None
+    # tui only: the optional on/off/toggle word.
+    action: str | None = None
     proxy: str | None = None
     force: bool = False
     dry_run: bool = False
@@ -151,6 +163,10 @@ def parse(argv: list[str]) -> Parsed:
         elif parsed.command is None:
             parsed.command = argument
             index += 1
+        elif parsed.command == "tui" and parsed.action is None:
+            # The picker takes an optional action, never carrier names.
+            parsed.action = argument
+            index += 1
         else:
             parsed.carriers.append(argument)
             index += 1
@@ -158,6 +174,25 @@ def parse(argv: list[str]) -> Parsed:
 
 
 def _reject_options(parsed: Parsed, command: str) -> None:
+    if parsed.command == "tui":
+        if (
+            parsed.force
+            or parsed.dry_run
+            or parsed.verbose
+            or parsed.check
+            or parsed.short
+            or parsed.require_up
+            or parsed.shell
+            or parsed.json
+        ):
+            raise UsageError(
+                "tui is interactive; it accepts only --proxy and an optional action"
+            )
+        if parsed.carriers or (
+            parsed.action is not None and parsed.action not in TUI_ACTIONS
+        ):
+            raise UsageError("tui takes one optional action: on, off or toggle")
+        return
     if parsed.command == "status":
         if parsed.force or parsed.dry_run or parsed.verbose:
             raise UsageError(
@@ -237,6 +272,7 @@ def main(argv: list[str]) -> int:
         if (
             parsed.command not in SWITCH_COMMANDS
             and parsed.command not in READ_COMMANDS
+            and parsed.command not in INTERACTIVE_COMMANDS
         ):
             print(f"proxysw: unknown command: {parsed.command}", file=sys.stderr)
             sys.stderr.write(USAGE)
@@ -265,6 +301,9 @@ def main(argv: list[str]) -> int:
                 )
             )
             return 0
+
+        if parsed.command == "tui":
+            return tui.run(parsed.action or "toggle", parsed.proxy)
 
         context, _, _ = _build_context(
             parsed.proxy, parsed.force, parsed.dry_run, parsed.verbose, parsed.json

@@ -44,13 +44,14 @@ FlClash 之类的代理客户端，其「系统代理」开关在 Linux 上通�
 ## 功能特点
 
 - **一条命令开关**：`on` / `off` / `toggle` 作用于全部受管载体，也可只切其中一个。
+- **交互式选择器**：`proxysw tui` 用可选安装的 `fzf` 选择载体并应用动作。
 - **五个载体，一处真相**：niri 环境块、shell rc、npm、pnpm、ssh；docker 只读展示。
 - **可逆**：`restore` 按快照逐字节恢复开关前的文件内容。
 - **可验证**：`off` 会把变量真正移除，`env | grep -i proxy` 能证明它干净。
 - **Node fetch 也能用**：`on` 时额外写入 `NODE_USE_ENV_PROXY=1`，因为 Node 24+ 的 `fetch` 默认不读环境变量。
 - **冲突检测**：文件在开关后被外部修改时拒绝覆盖，`--force` 才放行。
 - **原子写入**：临时文件 + rename，保留原有权限位。
-- **无第三方运行时依赖**：Python 3.11+ 标准库即可运行。
+- **核心命令无第三方运行时依赖**：Python 3.11+ 标准库即可运行；`tui` 额外需要可选安装的 `fzf`。
 
 ## 工作原理
 
@@ -89,7 +90,7 @@ export PATH="$PWD/bin:$PATH"
 ln -s "$PWD/bin/proxysw" ~/.local/bin/proxysw
 ```
 
-无需构建、无需包管理器。运行测试需要 [bats](https://github.com/bats-core/bats-core) 与 PyYAML。
+无需构建、无需包管理器；`proxysw tui` 额外需要可选安装的 [fzf](https://github.com/junegunn/fzf)，可用 `PROXYSW_FZF` 指定 fzf 路径。运行测试需要 [bats](https://github.com/bats-core/bats-core) 与 PyYAML。
 
 ## 快速开始
 
@@ -118,6 +119,13 @@ eval "$(proxysw env)"
 proxysw off
 ```
 
+打开交互式选择器（需要 fzf），或指定动作：
+
+```bash
+proxysw tui
+proxysw tui off
+```
+
 只切换 pnpm 或检查本地代理端口是否在监听：
 
 ```bash
@@ -141,6 +149,7 @@ proxysw restore
 | `proxysw restore [载体...]` | 按快照逐字节恢复；原文件本不存在则删除 |
 | `proxysw status [--check] [--json] [--short] [--require-up]` | 查看状态；`--check` 探测端点端口，`--json` 输出机器可读结构，`--short` 只列载体与状态，`--require-up` 在端点不通时以退出码 1 结束 |
 | `proxysw env [--shell <name>] [--json]` | 输出 `export` / `unset` 语句供 `eval` 使用；`--shell` 选 bash、zsh 或 fish，`--json` 输出同一份决策的结构化形式 |
+| `proxysw tui [on|off|toggle]` | 交互式选择载体并应用动作；无动作时默认 `toggle`。需要可选的 `fzf`，不接受 `--json` |
 
 | 选项 | 适用于 | 说明 |
 | --- | --- | --- |
@@ -152,11 +161,11 @@ proxysw restore
 | `--short` | `status` | 只输出载体与状态两列，窄终端可用 |
 | `--require-up` | `status` | 端点不通时退出 1；隐含 `--check` |
 | `--shell <name>` | `env` | `bash`、`zsh` 或 `fish`；不指定时按 `$SHELL` 推断 |
-| `--json` | 所有命令 | 机器可读输出，stdout 上只有一份文档，顶层带 `schema` 字段 |
+| `--json` | 非交互命令 | 机器可读输出，stdout 上只有一份文档，顶层带 `schema` 字段 |
 | `-V`, `--version` | 所有命令 | 打印版本并退出 |
 | `-h`, `--help` | 所有命令 | 帮助 |
 
-机器可读输出适用于状态栏与包装脚本：`proxysw status --json` 给出各载体状态，`proxysw --dry-run on --json` 给出变更计划，`proxysw on --json` 会在真正写盘之后给出同一份文档（`dry_run` 为 `false`，每个载体带 `written` 与 `pending_reload`），三者顶层都有 `schema`，字段变更时会递增。人话进度一律走 stderr，所以 stdout 可以整份交给 `jq`。`--verbose` 与 `--json` 互斥。本仓库暂不提供 TUI。
+机器可读输出适用于状态栏与包装脚本：`proxysw status --json` 给出各载体状态，`proxysw --dry-run on --json` 给出变更计划，`proxysw on --json` 会在真正写盘之后给出同一份文档（`dry_run` 为 `false`，每个载体带 `written` 与 `pending_reload`），三者顶层都有 `schema`，字段变更时会递增。人话进度一律走 stderr，所以 stdout 可以整份交给 `jq`。`--verbose` 与 `--json` 互斥。交互式选择器 `proxysw tui` 需要可选安装的 `fzf`，且不接受 `--json`。
 
 `off` 与 `restore` 的区别是刻意的：`off` 把配置渲染成「没有代理」，而 `restore` 才回滚到开关前的字节。原始文件本就可能含代理值，若 `off` 走回滚，「关闭」就会变成「把代理装回去」。设计取舍见 [ADR 0003](docs/adr/0003-off-renders-no-proxy-restore-recovers.md)。
 
@@ -225,7 +234,8 @@ bats --filter 'restore' tests/
 - 不写 `all_proxy` / `ALL_PROXY`，也不解析 FlClash 的私有配置。
 - fish 不是受管载体：`proxysw env --shell fish` 输出正确语法，但不会写入 `config.fish`。
 - 并发开关会排队（默认最多等 5 秒，超时退出 1），不会交错执行。
-- TUI 与状态栏插件尚未提供。
+- TUI 需要可选安装的 `fzf`；首版不做 restore、冲突 force 或端点编辑。
+- 状态栏插件尚未提供。
 
 ## 开发
 

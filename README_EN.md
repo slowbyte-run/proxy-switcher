@@ -44,13 +44,14 @@ The result is proxy settings scattered across half a dozen unrelated places: the
 ## Features
 
 - **One command** to turn everything on, off, or toggle it.
+- **Interactive picker**: `proxysw tui` uses the optional `fzf` to pick carriers and apply an action.
 - **Five carriers, one source of truth**: niri environment, shell rc, npm, pnpm, ssh; docker is read-only.
 - **Reversible**: `restore` recovers the exact bytes from before the switch.
 - **Verifiable**: `off` removes the variables for real, so `env | grep -i proxy` proves it.
 - **Node fetch included**: `on` also writes `NODE_USE_ENV_PROXY=1`, because Node 24+'s `fetch` ignores the environment by default.
 - **Conflict detection**: refuses to overwrite a file edited since the last switch unless `--force` is given.
 - **Atomic writes** with the original permission bits preserved.
-- **No third-party runtime dependencies**: Python 3.11+ standard library only.
+- **No third-party runtime dependencies for the core**: Python 3.11+ standard library only; `tui` needs the optional `fzf`.
 
 ## How it works
 
@@ -89,7 +90,7 @@ To install into `~/.local/bin`, a symlink is enough — the launcher resolves it
 ln -s "$PWD/bin/proxysw" ~/.local/bin/proxysw
 ```
 
-No build step and no package manager. Running the tests requires [bats](https://github.com/bats-core/bats-core) and PyYAML.
+No build step and no package manager; `proxysw tui` additionally needs the optional [fzf](https://github.com/junegunn/fzf), and `PROXYSW_FZF` can point at a specific binary. Running the tests requires [bats](https://github.com/bats-core/bats-core) and PyYAML.
 
 ## Quick start
 
@@ -118,6 +119,13 @@ Turn the proxy off:
 proxysw off
 ```
 
+Open the interactive picker (needs fzf), or choose the action up front:
+
+```bash
+proxysw tui
+proxysw tui off
+```
+
 Toggle only pnpm, or check whether the local proxy port is listening:
 
 ```bash
@@ -141,6 +149,7 @@ proxysw restore
 | `proxysw restore [carrier...]` | Restore the pre-switch snapshot byte for byte |
 | `proxysw status [--check] [--json] [--short] [--require-up]` | Show state; `--check` probes the endpoint port, `--json` emits machine-readable output, `--short` prints only carrier and state, `--require-up` exits 1 when the endpoint is down |
 | `proxysw env [--shell <name>] [--json]` | Print `export` / `unset` statements for `eval`; `--shell` picks bash, zsh or fish, `--json` emits the same decisions as data |
+| `proxysw tui [on|off|toggle]` | Pick carriers interactively and apply the action; defaults to `toggle`. Needs the optional `fzf` and does not accept `--json` |
 
 | Option | Applies to | Description |
 | --- | --- | --- |
@@ -152,11 +161,11 @@ proxysw restore
 | `--short` | `status` | Carrier and state columns only, for narrow terminals |
 | `--require-up` | `status` | Exit 1 when the endpoint is down; implies `--check` |
 | `--shell <name>` | `env` | `bash`, `zsh` or `fish`; inferred from `$SHELL` when omitted |
-| `--json` | all commands | Machine-readable output; one document on stdout, with a top-level `schema` field |
+| `--json` | non-interactive commands | Machine-readable output; one document on stdout, with a top-level `schema` field |
 | `-V`, `--version` | all commands | Print the version and exit |
 | `-h`, `--help` | all commands | Show help |
 
-The machine-readable output is the integration surface for status bars and wrapper scripts: `proxysw status --json` reports every carrier, `proxysw --dry-run on --json` returns the change plan, and `proxysw on --json` returns the same document after actually writing (`dry_run` is `false`, and each carrier carries `written` and `pending_reload`). All of them carry `schema`, bumped whenever a field changes. Human-facing progress goes to stderr, so stdout can be piped straight into `jq`. `--verbose` and `--json` are mutually exclusive. There is no TUI yet.
+The machine-readable output is the integration surface for status bars and wrapper scripts: `proxysw status --json` reports every carrier, `proxysw --dry-run on --json` returns the change plan, and `proxysw on --json` returns the same document after actually writing (`dry_run` is `false`, and each carrier carries `written` and `pending_reload`). All of them carry `schema`, bumped whenever a field changes. Human-facing progress goes to stderr, so stdout can be piped straight into `jq`. `--verbose` and `--json` are mutually exclusive. The interactive picker `proxysw tui` needs the optional `fzf` and does not accept `--json`.
 
 The difference between `off` and `restore` is deliberate: `off` renders "no proxy configured", while `restore` rolls the bytes back. The original file may already contain proxy values, so making `off` a rollback would turn "off" into "put the proxy back". See [ADR 0003](docs/adr/0003-off-renders-no-proxy-restore-recovers.md).
 
@@ -225,7 +234,8 @@ bats --filter 'restore' tests/
 - `all_proxy` / `ALL_PROXY` are never written, and FlClash's private config is never parsed.
 - fish is not a managed carrier: `proxysw env --shell fish` renders the right syntax but never writes `config.fish`.
 - Concurrent switches queue (5s by default, then exit 1) instead of interleaving.
-- No TUI and no status-bar plugin yet.
+- The TUI needs the optional `fzf`; the first version does not restore, force conflicts, or edit the endpoint.
+- No status-bar plugin yet.
 
 ## Development
 

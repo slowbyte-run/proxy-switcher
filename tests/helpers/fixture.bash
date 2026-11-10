@@ -36,6 +36,30 @@ exit 0
 STUB
   chmod +x "$FIXTURE_ROOT/bin/niri"
 
+  # The picker is the TUI's only external collaborator besides the CLI. This
+  # stub drains the list it is fed, records it, and prints whatever selection
+  # the test asked for. Tests never need a terminal.
+  cat > "$FIXTURE_ROOT/bin/fzf" <<'STUB'
+#!/usr/bin/env bash
+set -euo pipefail
+
+if [ -n "${STUB_FZF_ARGV_LOG:-}" ]; then
+  printf '%s\n' "$@" > "$STUB_FZF_ARGV_LOG"
+fi
+if [ -n "${STUB_FZF_STDIN_LOG:-}" ]; then
+  cat > "$STUB_FZF_STDIN_LOG"
+else
+  cat > /dev/null
+fi
+if [ -n "${STUB_FZF_EXIT:-}" ]; then
+  exit "$STUB_FZF_EXIT"
+fi
+if [ -n "${STUB_FZF_OUTPUT:-}" ]; then
+  printf '%s\n' "$STUB_FZF_OUTPUT"
+fi
+STUB
+  chmod +x "$FIXTURE_ROOT/bin/fzf"
+
   PATH="$FIXTURE_ROOT/bin:$PATH"
   export PATH
 }
