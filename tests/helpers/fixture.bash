@@ -89,6 +89,12 @@ if [ -n "${STUB_FZF_PREVIEW_LOG:-}" ]; then
   fi
 fi
 
+if [ -n "${STUB_FZF_SLEEP:-}" ]; then
+  sleep "$STUB_FZF_SLEEP"
+fi
+if [ -n "${STUB_FZF_STDERR:-}" ]; then
+  printf '%s\n' "$STUB_FZF_STDERR" >&2
+fi
 if [ -n "${STUB_FZF_EXIT:-}" ]; then
   exit "$STUB_FZF_EXIT"
 fi

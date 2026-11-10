@@ -27,6 +27,7 @@ No build, no package manager. Python 3.11+ (uses `tomllib`); PyYAML is a test de
 - `bats tests/niri.bats` — one carrier; `bats --filter 'pattern' tests/` — one test
 - `./bin/proxysw status` — read-only, safe to run on the real machine
 - `./bin/proxysw on|off|toggle|restore|env [carrier...]`
+- `./bin/proxysw tui [on|off|toggle]` — optional fzf picker; needs an interactive terminal and fzf (missing fzf → exit 2)
 
 `on`/`off`/`restore` write real files. Use `--dry-run` before touching the live config. Add `--json` for a machine-readable document; the executing command and the dry run return the same shape, told apart by `dry_run`.
 
@@ -42,6 +43,7 @@ No build, no package manager. Python 3.11+ (uses `tomllib`); PyYAML is a test de
 - Every `--json` document carries `schema` (`proxy_common.JSON_SCHEMA`); bump it when a field is added, removed or renamed. Status-bar widgets and TUI wrappers depend on it. `tests/schema.bats` pins the field set of each document and fails unless the code, the snapshot and the number agree — so a forgotten bump cannot pass.
 - A switch is one locked transaction: `proxy_engine.state_lock` takes a global `flock` *before* `load_manifest` and holds it through `save_manifest`. The lock file lives in `$XDG_RUNTIME_DIR` (temp-dir fallback), never in the state directory — `--dry-run` and a no-op `restore` must leave that directory untouched. See ADR 0007.
 - `env` renders three dialects: bash/zsh share POSIX `export`/`unset`, fish needs `set -gx`/`set -e`. An unsupported `$SHELL` is a usage error rather than a silent zsh guess. fish is not a managed carrier. See ADR 0006.
+- `proxysw tui` is an optional fzf consumer, not a second writer: `libexec/tui.py` runs `bin/proxysw ... --json` subprocesses, never imports `proxy_engine`/`proxy_helper`/`carriers`, and never writes a carrier file. `tests/contract.bats` guards the import half. `--json` is for non-interactive commands, `tui` rejects it, and schema stays 2. See ADR 0008.
 
 ## Before changing how a carrier renders or how a switch commits
 
@@ -53,9 +55,10 @@ already enforces, so a reviewer can skip re-checking those by eye.
 
 ## Testing
 
-- Every bats test must call `fixture_init`. It points `HOME`, `XDG_CONFIG_HOME`, `XDG_STATE_HOME` and `XDG_RUNTIME_DIR` at `$BATS_TEST_TMPDIR`, pins `SHELL=/bin/zsh`, puts a stub `niri` first on `PATH`, and exports `PROXYSW_BIN`.
+- Every bats test must call `fixture_init`. It points `HOME`, `XDG_CONFIG_HOME`, `XDG_STATE_HOME` and `XDG_RUNTIME_DIR` at `$BATS_TEST_TMPDIR`, pins `SHELL=/bin/zsh`, puts stub `niri` and `fzf` first on `PATH`, and exports `PROXYSW_BIN`.
 - Tests stay offline, avoid sudo, and touch only the fixture tree.
 - Add per-carrier tests in `tests/<carrier>.bats` and cross-carrier behaviour in `tests/aggregate.bats`. Launch/install behaviour goes in `tests/launcher.bats`; architecture rules go in `tests/contract.bats`; the `--json` field snapshots go in `tests/schema.bats`; the switch lock goes in `tests/lock.bats`; the endpoint probe goes in `tests/check.bats`.
+- TUI black-box tests live in `tests/tui.bats`. The real fzf is replaced by the fixture stub (it records argv/stdin, can emulate the preview, and returns a configured exit code or selection); tests assert only CLI calls, output and bytes on disk. Real fzf rendering, keys and narrow terminals are a manual checklist in `docs/tui-manual-smoke.md`, not a gate.
 - `run_proxysw` is `run`, which merges stderr into `$output`. When a test asserts on a `--json` document, capture stdout alone (`run bash -c '"$PROXYSW_BIN" ... 2>/dev/null'`) — otherwise a stray note makes `jq` fail and the assertion stops meaning what it says.
 
 ## Conventions
