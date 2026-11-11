@@ -38,7 +38,7 @@
 
 FlClash 之类的代理客户端，其「系统代理」开关在 Linux 上通常只修改 GNOME 的 gsettings 或 KDE 的 `kioslaverc`。niri 不属于这两者，它和大多数命令行程序一样，只认 `http_proxy`、`https_proxy` 这类环境变量和各自的配置文件。
 
-结果就是代理设置散落在五六个互不相干的位置：niri 的 `environment {}` 块、shell 启动文件、`~/.npmrc`、pnpm 配置、`~/.ssh/config`、docker 的 `daemon.json`。想关代理得逐个文件手改，漏一个就会留下指向死端口的过期配置；想开回来又得凭记忆恢复原值。
+结果就是代理设置散落在五六个互不相干的位置：niri 的 `environment {}` 块、shell 启动文件、`~/.npmrc`、pnpm 配置、`~/.ssh/config`、docker 的 `~/.docker/config.json` 与 `daemon.json`。想关代理得逐个文件手改，漏一个就会留下指向死端口的过期配置；想开回来又得凭记忆恢复原值。
 
 `proxy-switcher` 把这些位置当作受管的「载体」，用一条命令统一开关，并在改动前自动快照。
 
@@ -46,7 +46,7 @@ FlClash 之类的代理客户端，其「系统代理」开关在 Linux 上通�
 
 - **一条命令开关**：`on` / `off` / `toggle` 作用于全部受管载体，也可只切其中一个。
 - **交互式选择器**：`proxysw tui` 用可选安装的 `fzf` 选择载体并应用动作。
-- **五个载体，一处真相**：niri 环境块、shell rc、npm、pnpm、ssh；docker 只读展示。
+- **六个载体，一处真相**：niri 环境块、shell rc、npm、pnpm、ssh、docker 的容器代理；daemon 的 `pull`/`push` 代理只读展示。
 - **可逆**：`restore` 按快照逐字节恢复开关前的文件内容。
 - **可验证**：`off` 会把变量真正移除，`env | grep -i proxy` 能证明它干净。
 - **Node fetch 也能用**：`on` 时额外写入 `NODE_USE_ENV_PROXY=1`，因为 Node 24+ 的 `fetch` 默认不读环境变量。
@@ -65,7 +65,8 @@ FlClash 之类的代理客户端，其「系统代理」开关在 Linux 上通�
 | `npm` | `~/.npmrc` | `proxy`、`https-proxy`、`noproxy` | npm、yarn v1 |
 | `pnpm` | `~/.config/pnpm/config.yaml` | `httpProxy`、`httpsProxy`、`noProxy` | pnpm |
 | `ssh` | `~/.ssh/config` 的 `github.com` 主机块 | `ProxyCommand` | GitHub SSH |
-| `docker` | `/etc/docker/daemon.json` | 只读展示 | docker daemon |
+| `docker` | `~/.docker/config.json` 的 `proxies.default` | `httpProxy`、`httpsProxy` | 新建的容器与构建（`docker run/build`、`docker compose`） |
+| `docker-daemon` | `/etc/docker/daemon.json` | 只读展示 | docker daemon 的 `pull`/`push` |
 
 **覆盖关系**：交互式 shell 以 `shell` 载体为准，其余由 niri spawn 的进程以 `niri` 载体为准。因此两个载体关闭时都会写显式 `unset` / `null`，而不是依赖「键不存在」——否则另一方的值会漏下来。
 
@@ -172,7 +173,7 @@ proxysw restore
 
 ## TUI
 
-`proxysw tui [on|off|toggle]` 在终端里打开 fzf 选择器：列出受管且未被 `exclude` 的载体及其开关状态，Tab 多选、Ctrl-A 全选、Enter 应用、Esc 取消；不带动作时默认 `toggle`。docker 和被 `exclude` 的载体只出现在头部，不会进入可选行。
+`proxysw tui [on|off|toggle]` 在终端里打开 fzf 选择器：列出受管且未被 `exclude` 的载体及其开关状态，Tab 多选、Ctrl-A 全选、Enter 应用、Esc 取消；不带动作时默认 `toggle`。只读的 `docker-daemon` 和被 `exclude` 的载体只出现在头部，不会进入可选行。
 
 - **可选依赖**：`fzf` 是唯一的外部程序，且只影响 `tui`；核心命令仍只依赖 Python 标准库。fzf 缺失时以用法错误（退出码 2）结束，可用 `PROXYSW_FZF` 指定 fzf 路径。
 - **`--json` 的例外**：`--json` 只适用于非交互命令。`tui` 拒绝 `--json`、`--dry-run`、`--force`、`--verbose`、`--check`、`--short`、`--require-up` 和 `--shell`，只接受一个可选动作与 `--proxy`。
@@ -189,6 +190,7 @@ proxysw restore
 ```toml
 endpoint = "http://127.0.0.1:7890"
 no_proxy = "localhost,127.0.0.1,::1"
+# container_endpoint = "http://172.17.0.1:7890"
 exclude = ["ssh"]
 ```
 
@@ -196,6 +198,7 @@ exclude = ["ssh"]
 | --- | --- | --- |
 | `endpoint` | `http://127.0.0.1:7890` | 代理端点，只接受 http URL |
 | `no_proxy` | `localhost,127.0.0.1,::1` | 只支持域名与 IP 字面量，不承诺 CIDR 语义 |
+| `container_endpoint` | 空（由 bridge 网关推导） | 容器内可达的代理地址；rootless 或自定义网络时手动指定 |
 | `exclude` | `[]` | 永不改动的载体名 |
 
 状态与快照存放在 `$XDG_STATE_HOME/proxy-switcher/manifest.json`。
@@ -211,6 +214,8 @@ fish 不是受管载体（见 [ADR 0006](docs/adr/0006-fish-is-not-a-managed-car
 **npm / pnpm**：分别写各自配置文件中的三个键。npm 保留 600 权限、替换已有键而不追加重复项；pnpm 采用行级编辑，保留注释、缩进与缩进风格。
 
 **ssh**：只改 `github.com` 主机块中的 `ProxyCommand`，`off` 写 `none`，其他 Host 块逐字节不变。关闭后 GitHub SSH 将直连——若网络环境直连不可达，`git push` 会失败，`status` 会提示这一点。
+
+**docker**：只改 `~/.docker/config.json` 的 `proxies.default` 里的 `httpProxy` 与 `httpsProxy`；`noProxy`、per-daemon 条目、`auths` 一律不动，文件永不删除。容器里的 `127.0.0.1` 是容器自己，所以 `endpoint` 为 loopback 时会改写成 docker bridge 网关（可用 `container_endpoint` 覆盖）；docker 没运行时该载体跳过并警告。冲突检测只看这两个键，因此 `docker login` 或 token 刷新重写文件不会误报。`docker pull` 走 daemon，不在它的范围内。
 
 ## 退出码
 
@@ -240,7 +245,8 @@ bats --filter 'restore' tests/
 ## 已知限制
 
 - 只适用于 Linux + niri；其他桌面环境未测试。
-- docker 只读：修改 `daemon.json` 需要 root，并且必须重启 daemon，会终止运行中的容器。
+- `docker` 只影响新建的容器与构建：已在运行的容器保留旧环境；compose 里显式设置 `HTTP_PROXY` 的服务吃 `.env`，不吃这个文件。`docker pull`/`push` 走 daemon，仍需 root 和重启。
+- `docker` 的 `noProxy` 不归本工具：容器侧的豁免清单（服务名、内网域名）由项目自己维护。
 - systemd `--user` 服务不受管理：`set-environment` 影响不到 niri 已运行的进程。
 - 已在运行的进程不会热更新，只影响之后新启动的进程。
 - 从 DMS 启动器拉起的应用继承的是 DMS 启动时的环境，可能需要重启 DMS 才能看到新值。

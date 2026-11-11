@@ -36,6 +36,24 @@ exit 0
 STUB
   chmod +x "$FIXTURE_ROOT/bin/niri"
 
+  # The docker carrier asks the daemon for the bridge gateway. The stub answers
+  # with a fixed address so tests never talk to a real daemon; a test can point
+  # STUB_DOCKER_STDOUT elsewhere or fail the call with STUB_DOCKER_EXIT.
+  cat > "$FIXTURE_ROOT/bin/docker" <<'STUB'
+#!/usr/bin/env bash
+if [ -n "${STUB_DOCKER_LOG:-}" ]; then
+  printf '%s\n' "$*" >> "$STUB_DOCKER_LOG"
+fi
+if [ -n "${STUB_DOCKER_STDOUT:-}" ]; then
+  printf '%s\n' "$STUB_DOCKER_STDOUT"
+fi
+exit "${STUB_DOCKER_EXIT:-0}"
+STUB
+  chmod +x "$FIXTURE_ROOT/bin/docker"
+  # Only a default, so a test that wants an empty answer can still set it.
+  STUB_DOCKER_STDOUT="${STUB_DOCKER_STDOUT-172.17.0.1}"
+  export STUB_DOCKER_STDOUT
+
   # The picker is the TUI's only external collaborator besides the CLI. This
   # stub drains the list it is fed, records it, and prints whatever selection
   # the test asked for. Tests never need a terminal.
@@ -122,6 +140,7 @@ shell_rc_path() {
 npmrc_path() { printf '%s\n' "$HOME/.npmrc"; }
 pnpm_config_path() { printf '%s\n' "$XDG_CONFIG_HOME/pnpm/config.yaml"; }
 ssh_config_path() { printf '%s\n' "$HOME/.ssh/config"; }
+docker_config_path() { printf '%s\n' "$HOME/.docker/config.json"; }
 
 proxy_keys() {
   printf '%s\n' \
@@ -129,7 +148,7 @@ proxy_keys() {
 }
 
 managed_carriers() {
-  printf '%s\n' niri shell npm pnpm ssh
+  printf '%s\n' niri shell npm pnpm ssh docker
 }
 
 carrier_path() {
@@ -139,6 +158,7 @@ carrier_path() {
     npm) npmrc_path ;;
     pnpm) pnpm_config_path ;;
     ssh) ssh_config_path ;;
+    docker) docker_config_path ;;
     *) return 1 ;;
   esac
 }
@@ -382,12 +402,48 @@ Host internal.example
 SSH
 }
 
+write_docker_on() {
+  mkdir -p "$(dirname "$(docker_config_path)")"
+  cat > "$(docker_config_path)" <<'JSON'
+{
+    "auths": {
+        "https://index.docker.io/v1/": {
+            "auth": "Zml4dHVyZQ=="
+        }
+    },
+    "proxies": {
+        "default": {
+            "httpProxy": "http://172.17.0.1:7890",
+            "httpsProxy": "http://172.17.0.1:7890",
+            "noProxy": "localhost,127.0.0.1,postgres"
+        }
+    }
+}
+JSON
+  chmod 600 "$(docker_config_path)"
+}
+
+write_docker_off() {
+  mkdir -p "$(dirname "$(docker_config_path)")"
+  cat > "$(docker_config_path)" <<'JSON'
+{
+    "auths": {
+        "https://index.docker.io/v1/": {
+            "auth": "Zml4dHVyZQ=="
+        }
+    }
+}
+JSON
+  chmod 600 "$(docker_config_path)"
+}
+
 write_all_carriers_on() {
   write_niri_on
   write_shell_on
   write_npm_on
   write_pnpm_on
   write_ssh_on
+  write_docker_on
 }
 
 write_all_carriers_off() {
@@ -396,6 +452,7 @@ write_all_carriers_off() {
   write_npm_off
   write_pnpm_off
   write_ssh_off
+  write_docker_off
 }
 
 proxy_state_root() { printf '%s\n' "$XDG_STATE_HOME/proxy-switcher"; }

@@ -66,7 +66,7 @@ carrier_modules() {
 @test "every carrier module is registered and every registration exists" {
   local registered listed missing unlisted
   registered="$(sed -n '/^MODULES = (/,/^)/p' "$REPO_ROOT/libexec/carriers/__init__.py" \
-    | grep -oE '"[a-z]+"' | tr -d '"' | sort)"
+    | grep -oE '"[a-z_]+"' | tr -d '"' | sort)"
   listed="$(carrier_modules | sort)"
   missing="$(comm -13 <(printf '%s\n' "$registered") <(printf '%s\n' "$listed"))"
   unlisted="$(comm -23 <(printf '%s\n' "$registered") <(printf '%s\n' "$listed"))"
@@ -84,7 +84,7 @@ carrier_modules() {
   local module
   for module in $(carrier_modules); do
     grep -qE '^CARRIER = Carrier\(' "$REPO_ROOT/libexec/carriers/$module.py"
-    grep -qE '^from \.model import Carrier$' "$REPO_ROOT/libexec/carriers/$module.py"
+    grep -qE '^from \.model import Carrier\b' "$REPO_ROOT/libexec/carriers/$module.py"
   done
 }
 

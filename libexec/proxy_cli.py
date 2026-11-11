@@ -56,8 +56,9 @@ tui:
   scriptable and has no --json.
 
 Configuration:
-  $XDG_CONFIG_HOME/proxy-switcher/config.toml accepts endpoint, no_proxy
-  and exclude (a list of carrier names to leave alone).
+  $XDG_CONFIG_HOME/proxy-switcher/config.toml accepts endpoint, no_proxy,
+  container_endpoint (the docker-side address, derived when empty) and
+  exclude (a list of carrier names to leave alone).
 
 Exit status: 0 success, 1 conflict/failure, 2 usage error.
 """
@@ -228,29 +229,25 @@ def _reject_options(parsed: Parsed, command: str) -> None:
         raise UsageError("--verbose and --json are mutually exclusive")
 
 
-def _settings_endpoint(override: str | None) -> tuple[str, str, tuple[str, ...]]:
-    settings = proxy_helper.load_settings()
-    endpoint = override or settings.endpoint
-    return endpoint, settings.no_proxy, settings.exclude
-
-
 def _build_context(
     proxy: str | None, force: bool, dry_run: bool, verbose: bool, as_json: bool
 ) -> tuple[Context, str, str]:
-    endpoint, no_proxy, excluded = _settings_endpoint(proxy)
+    settings = proxy_helper.load_settings()
+    endpoint = proxy or settings.endpoint
     context = Context(
         home=proxy_helper.home_dir(),
         config_home=proxy_helper.config_home(),
         state_root=proxy_helper.state_path(),
         endpoint=endpoint,
-        no_proxy=no_proxy,
-        excluded=frozenset(excluded),
+        no_proxy=settings.no_proxy,
+        container_endpoint=settings.container_endpoint,
+        excluded=frozenset(settings.exclude),
         force=force,
         dry_run=dry_run,
         verbose=verbose,
         json=as_json,
     )
-    return context, endpoint, no_proxy
+    return context, endpoint, settings.no_proxy
 
 
 def main(argv: list[str]) -> int:
@@ -291,7 +288,9 @@ def main(argv: list[str]) -> int:
             return proxy_helper.status_exit_code(status, require_up)
 
         if parsed.command == "env":
-            endpoint, no_proxy, _ = _settings_endpoint(parsed.proxy)
+            settings = proxy_helper.load_settings()
+            endpoint = parsed.proxy or settings.endpoint
+            no_proxy = settings.no_proxy
             # JSON output is data, not shell code, so it needs no dialect. It
             # must also work when $SHELL is one `env` cannot render.
             shell = "bash" if parsed.json else proxy_helper.resolve_shell(parsed.shell)

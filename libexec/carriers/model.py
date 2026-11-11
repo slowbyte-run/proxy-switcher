@@ -14,6 +14,24 @@ from dataclasses import dataclass
 from typing import Any
 
 
+class CarrierError(Exception):
+    """A carrier cannot read or render its file.
+
+    Reported as a per-carrier failure (exit 1) rather than a crash: a broken
+    ``~/.docker/config.json`` must not take the whole switch down with a
+    traceback, and the other carriers still need their chance to run.
+    """
+
+
+class CarrierWarning(Exception):
+    """The carrier cannot act right now, but the switch should still succeed.
+
+    Docker raises it when the daemon is unreachable and the container-side
+    address cannot be derived. The file is left alone and the message travels
+    in the plan's ``warning`` field, so ``--json`` and the TUI see it too.
+    """
+
+
 @dataclass(frozen=True)
 class Carrier:
     name: str
@@ -42,3 +60,10 @@ class Carrier:
     # for ``status``, the text already on disk) and returns a warning, which the
     # engine prints before writing and ``status`` appends to the note.
     check_rendered: Callable[[str | None], str] | None = None
+    # Conflict detection hashes the whole file by default. A carrier whose file
+    # another tool rewrites in full (docker rewrites config.json on login, token
+    # refresh and context switches) can fingerprint only the region it owns, so
+    # unrelated edits do not look like a conflict. The engine compares and
+    # stores this value in place of the file hash; ``restore`` still replays the
+    # whole-file snapshot.
+    managed_fingerprint: Callable[[str | None], str | None] | None = None

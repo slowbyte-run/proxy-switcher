@@ -27,6 +27,7 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 
 from carriers import get as get_carrier
+from carriers.model import CarrierError, CarrierWarning
 from proxy_common import JSON_SCHEMA, Action, State
 
 MANIFEST_VERSION = 1
@@ -54,6 +55,9 @@ class Context:
     state_root: str
     endpoint: str
     no_proxy: str
+    # Empty means "let the docker carrier derive it"; a non-empty value is the
+    # explicit container-side override from config.toml.
+    container_endpoint: str = ""
     excluded: frozenset[str] = frozenset()
     force: bool = False
     dry_run: bool = False
@@ -109,6 +113,20 @@ def hash_bytes(data: bytes | None) -> str | None:
     if data is None:
         return None
     return "sha256:" + hashlib.sha256(data).hexdigest()
+
+
+def _fingerprint(carrier, data: bytes | None) -> str | None:
+    """What conflict detection compares: the managed region, or the whole file.
+
+    Carriers that own only a slice of a file another tool rewrites return a
+    fingerprint of that slice, so an unrelated edit (a refreshed docker token,
+    say) is not a conflict. Everything else keeps the whole-file hash.
+    """
+    if carrier.managed_fingerprint is None:
+        return hash_bytes(data)
+    if data is None:
+        return None
+    return carrier.managed_fingerprint(data.decode("utf-8"))
 
 
 def read_bytes(path: str) -> bytes | None:
@@ -368,8 +386,9 @@ def build_plans(
             entry = entries.get(name)
             expected = entry.get("written_hash") if entry else None
 
-            if entry is not None and current_hash != expected:
-                conflicts.append((name, path, expected, current_hash))
+            current_fingerprint = _fingerprint(carrier, current)
+            if entry is not None and current_fingerprint != expected:
+                conflicts.append((name, path, expected, current_fingerprint))
 
             if action is Action.RESTORE and entry is None:
                 if explicit:
@@ -384,14 +403,22 @@ def build_plans(
                 original_existed = entry.get("original_existed", current is not None)
             else:
                 original_existed = _original_region_existed(carrier, current)
-            wanted = _target_bytes(carrier, entry, current, context, action)
-            warning = _rendered_warning(carrier, wanted)
-            if warning and not context.json:
-                context.warn(f"{name}: {warning}")
+            try:
+                wanted = _target_bytes(carrier, entry, current, context, action)
+            except CarrierWarning as warning:
+                # The carrier cannot act right now. Leave the file alone and
+                # carry the reason in the plan, so --json and the TUI see it,
+                # not only the terminal.
+                wanted = current
+                warning_text = str(warning)
+            else:
+                warning_text = _rendered_warning(carrier, wanted)
+            if warning_text and not context.json:
+                context.warn(f"{name}: {warning_text}")
         except UnicodeDecodeError as error:
             failures.append((name, f"{path} is not valid UTF-8: {error}"))
             continue
-        except (EngineError, OSError) as error:
+        except (CarrierError, EngineError, OSError) as error:
             failures.append((name, str(error)))
             continue
 
@@ -407,7 +434,7 @@ def build_plans(
                 wanted=wanted,
                 changed=wanted != current,
                 original_existed=original_existed,
-                warning=warning,
+                warning=warning_text,
             )
         )
 
@@ -547,7 +574,7 @@ def _apply_plan(context: Context, manifest: dict, action: Action, plan: Plan) ->
         wrote = True
 
     entry["state"] = plan.carrier.read_state(plan.path)
-    entry["written_hash"] = hash_bytes(plan.wanted)
+    entry["written_hash"] = _fingerprint(plan.carrier, plan.wanted)
     if wrote:
         entry["updated_at"] = _timestamp()
 

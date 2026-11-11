@@ -23,7 +23,8 @@ setup() {
   assert_carrier_state npm off
   assert_carrier_state pnpm off
   assert_carrier_state ssh off
-  assert_carrier_state docker unmanaged
+  assert_carrier_state docker off
+  assert_carrier_state docker-daemon unmanaged
 }
 
 @test "status reports niri off when the environment block writes null" {
@@ -178,16 +179,16 @@ setup() {
   assert_carrier_state ssh off
 }
 
-@test "status always shows docker as unmanaged with the reason" {
+@test "status always shows docker-daemon as unmanaged with the reason" {
   run_proxysw status
 
   [ "$status" -eq 0 ]
-  assert_carrier_state docker unmanaged
+  assert_carrier_state docker-daemon unmanaged
   [[ "$output" == *"root"* ]]
   [[ "$output" == *"daemon"* ]]
 }
 
-@test "status reports all five carriers on for a fully enabled fixture" {
+@test "status reports all six carriers on for a fully enabled fixture" {
   write_all_carriers_on
 
   run_proxysw status
@@ -276,13 +277,15 @@ TOML
   printf '%s\n' "$output" | jq -e . >/dev/null
   [ "$(printf '%s\n' "$output" | jq -r .endpoint)" = "http://127.0.0.1:7890" ]
   [ "$(printf '%s\n' "$output" | jq -r .no_proxy)" = "localhost,127.0.0.1,::1" ]
-  [ "$(printf '%s\n' "$output" | jq -r '.carriers | length')" -eq 6 ]
+  [ "$(printf '%s\n' "$output" | jq -r '.carriers | length')" -eq 7 ]
   for carrier in niri shell npm pnpm ssh; do
     [ "$(printf '%s\n' "$output" | jq -r --arg name "$carrier" \
       '.carriers[] | select(.name == $name) | .state')" = "on" ]
   done
   [ "$(printf '%s\n' "$output" | jq -r \
-    '.carriers[] | select(.name == "docker") | .state')" = "unmanaged" ]
+    '.carriers[] | select(.name == "docker") | .state')" = "on" ]
+  [ "$(printf '%s\n' "$output" | jq -r \
+    '.carriers[] | select(.name == "docker-daemon") | .state')" = "unmanaged" ]
   [ "$(printf '%s\n' "$output" | jq -r \
     '.carriers[] | select(.name == "npm") | .tools | join(", ")')" = "npm, yarn v1" ]
   [ "$(printf '%s\n' "$output" | jq -r \
@@ -294,7 +297,7 @@ TOML
 
   [ "$status" -eq 0 ]
   printf '%s\n' "$output" | jq -e . >/dev/null
-  [ "$(printf '%s\n' "$output" | jq -r '[.carriers[] | select(.state == "off")] | length')" -eq 5 ]
+  [ "$(printf '%s\n' "$output" | jq -r '[.carriers[] | select(.state == "off")] | length')" -eq 6 ]
 }
 
 @test "status performs no writes and never invokes niri" {
@@ -394,7 +397,7 @@ TOML
   for carrier in $(managed_carriers); do
     assert_carrier_state "$carrier" on
   done
-  assert_carrier_state docker unmanaged
+  assert_carrier_state docker-daemon unmanaged
 }
 
 @test "status --short fits an 80-column terminal" {

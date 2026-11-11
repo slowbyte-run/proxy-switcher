@@ -15,6 +15,7 @@ MODULES = (
     "pnpm",
     "ssh",
     "docker",
+    "docker_daemon",
 )
 
 

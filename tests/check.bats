@@ -138,7 +138,7 @@ TOML
   [ "$status" -eq 0 ]
   printf '%s\n' "$output" | jq -e . >/dev/null
   [ "$(printf '%s\n' "$output" | jq -r '.check.state')" = "down" ]
-  [ "$(printf '%s\n' "$output" | jq -r '.carriers | length')" -eq 6 ]
+  [ "$(printf '%s\n' "$output" | jq -r '.carriers | length')" -eq 7 ]
 }
 
 @test "status --check --json reports up and the probed host and port" {

@@ -381,7 +381,7 @@ TOML
   [ "$status" -eq 2 ]
   [[ "$output" == *"unknown carrier"* ]]
 
-  run_proxysw on docker
+  run_proxysw on docker-daemon
   [ "$status" -eq 2 ]
   [[ "$output" == *"read-only"* ]]
 }
@@ -438,5 +438,5 @@ STUB
   run_proxysw status
 
   [ "$status" -eq 0 ]
-  assert_carrier_state docker unmanaged
+  assert_carrier_state docker-daemon unmanaged
 }

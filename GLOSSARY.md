@@ -5,7 +5,7 @@
 ## Language
 
 **载体 (Carrier)**:
-一个由本工具整体写入或还原的配置位置，也是快照与冲突检测的最小单位。v1 有五个：niri 的 `environment {}` 块、shell rc 片段、`~/.npmrc`、pnpm 的 `config.yaml`、`~/.ssh/config` 中 github.com 的主机块。
+一个由本工具写入或还原的配置位置——整个文件，或文件里一个边界明确的受管区域——也是快照与冲突检测的最小单位。受管载体有六个：niri 的 `environment {}` 块、shell rc 片段、`~/.npmrc`、pnpm 的 `config.yaml`、`~/.ssh/config` 中 github.com 的主机块、`~/.docker/config.json` 中 `proxies.default` 的两个 URL 键。另有只读展示的 `docker-daemon`。
 _Avoid_: 代理面、通道、配置源、注入点
 
 **覆盖 (Override)**:
@@ -35,3 +35,7 @@ _Avoid_: 批量操作、批处理、原子操作
 **端点 (Endpoint)**:
 代理服务器的地址，默认 `http://127.0.0.1:7890`。
 _Avoid_: 代理地址、proxy URL、server
+
+**容器端点 (Container Endpoint)**:
+容器内可达的宿主代理地址。宿主端点监听 loopback 时容器用不了它（容器里的 `127.0.0.1` 是容器自己），所以 docker 载体写的是 bridge 网关推导出的地址，或配置里的 `container_endpoint`。
+_Avoid_: docker 端点、映射地址

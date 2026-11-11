@@ -26,7 +26,7 @@ setup() {
   grep -q '^npm' "$STUB_FZF_STDIN_LOG"
   grep -q '^pnpm' "$STUB_FZF_STDIN_LOG"
   grep -q '^ssh' "$STUB_FZF_STDIN_LOG"
-  ! grep -q '^docker' "$STUB_FZF_STDIN_LOG"
+  ! grep -q '^docker-daemon' "$STUB_FZF_STDIN_LOG"
   grep -q 'proxysw off>' "$STUB_FZF_ARGV_LOG"
 }
 
@@ -84,7 +84,7 @@ setup() {
   write_all_carriers_off
   # fzf can emit a row twice (Tab then re-select), and a stale/malformed row is
   # not a carrier name. Only known switchable names reach the CLI, once each.
-  export STUB_FZF_OUTPUT=$'npm\nbogus\ndocker\nnpm\n'
+  export STUB_FZF_OUTPUT=$'npm\nbogus\ndocker-daemon\nnpm\n'
 
   run bash -c 'printf "y\n" | "$PROXYSW_BIN" tui'
 
@@ -95,7 +95,7 @@ setup() {
 
 @test "a selection of only unknown rows writes nothing" {
   write_all_carriers_off
-  export STUB_FZF_OUTPUT=$'docker\nbogus'
+  export STUB_FZF_OUTPUT=$'docker-daemon\nbogus'
   local before
   before="$(snapshot_tree "$HOME" "$XDG_CONFIG_HOME" "$XDG_STATE_HOME")"
 
@@ -345,7 +345,7 @@ TOML
 @test "tui exits 0 without opening fzf when every carrier is excluded" {
   write_all_carriers_off
   write_proxy_config <<'TOML'
-exclude = ["niri", "shell", "npm", "pnpm", "ssh"]
+exclude = ["niri", "shell", "npm", "pnpm", "ssh", "docker"]
 TOML
   export STUB_FZF_ARGV_LOG="$FIXTURE_ROOT/fzf-argv.log"
 
@@ -372,16 +372,16 @@ TOML
   # Port 9 stays closed unless something unusual is running locally, and the
   # whole endpoint field is asserted so a bare "down" elsewhere cannot pass.
   grep -qF 'endpoint http://127.0.0.1:9  down' "$STUB_FZF_ARGV_LOG"
-  grep -qF 'docker: unmanaged' "$STUB_FZF_ARGV_LOG"
+  grep -qF 'docker-daemon: unmanaged' "$STUB_FZF_ARGV_LOG"
   grep -qF 'excluded: ssh' "$STUB_FZF_ARGV_LOG"
   grep -qF 'Tab' "$STUB_FZF_ARGV_LOG"
   grep -qF 'Ctrl-A' "$STUB_FZF_ARGV_LOG"
   grep -qF 'Enter' "$STUB_FZF_ARGV_LOG"
   grep -qF 'Esc' "$STUB_FZF_ARGV_LOG"
   grep -qF 'proxysw toggle>' "$STUB_FZF_ARGV_LOG"
-  # Only managed, non-excluded carriers are selectable; docker stays in the
-  # header, ssh is named as excluded and does not become a row.
-  [ "$(cut -f1 "$STUB_FZF_STDIN_LOG")" = "$(printf 'niri\nshell\nnpm\npnpm')" ]
+  # Only managed, non-excluded carriers are selectable; docker-daemon stays in
+  # the header, ssh is named as excluded and does not become a row.
+  [ "$(cut -f1 "$STUB_FZF_STDIN_LOG")" = "$(printf 'niri\nshell\nnpm\npnpm\ndocker')" ]
 }
 
 @test "rows keep a stable order and color on green and off yellow" {
@@ -395,7 +395,7 @@ TOML
 
   [ "$status" -eq 0 ]
   [ "$(cut -f1 "$STUB_FZF_STDIN_LOG")" \
-    = "$(printf 'niri\nshell\nnpm\npnpm\nssh')" ]
+    = "$(printf 'niri\nshell\nnpm\npnpm\nssh\ndocker')" ]
   grep -qF -- $'\t\x1b[32mon\x1b[0m\t' "$STUB_FZF_STDIN_LOG"
   grep -qF -- $'\t\x1b[33moff\x1b[0m\t' "$STUB_FZF_STDIN_LOG"
   grep -qxF -- '--ansi' "$STUB_FZF_ARGV_LOG"

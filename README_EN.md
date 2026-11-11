@@ -38,7 +38,7 @@ A command-line tool that switches HTTP/HTTPS proxy settings for every tool in a 
 
 Proxy clients such as FlClash usually implement their "system proxy" switch by editing GNOME's gsettings or KDE's `kioslaverc`. niri is neither, and most command-line programs only read `http_proxy`, `https_proxy` and their own config files.
 
-The result is proxy settings scattered across half a dozen unrelated places: the niri `environment {}` block, shell startup files, `~/.npmrc`, pnpm's config, `~/.ssh/config`, and docker's `daemon.json`. Turning the proxy off means editing each file by hand; miss one and you leave a stale proxy pointing at a dead port.
+The result is proxy settings scattered across half a dozen unrelated places: the niri `environment {}` block, shell startup files, `~/.npmrc`, pnpm's config, `~/.ssh/config`, and docker's `~/.docker/config.json` and `daemon.json`. Turning the proxy off means editing each file by hand; miss one and you leave a stale proxy pointing at a dead port.
 
 `proxy-switcher` treats those places as managed "carriers" and switches them with one command, snapshotting before every change.
 
@@ -46,7 +46,7 @@ The result is proxy settings scattered across half a dozen unrelated places: the
 
 - **One command** to turn everything on, off, or toggle it.
 - **Interactive picker**: `proxysw tui` uses the optional `fzf` to pick carriers and apply an action.
-- **Five carriers, one source of truth**: niri environment, shell rc, npm, pnpm, ssh; docker is read-only.
+- **Six carriers, one source of truth**: niri environment, shell rc, npm, pnpm, ssh, and docker's container proxies; the daemon's `pull`/`push` proxy stays read-only.
 - **Reversible**: `restore` recovers the exact bytes from before the switch.
 - **Verifiable**: `off` removes the variables for real, so `env | grep -i proxy` proves it.
 - **Node fetch included**: `on` also writes `NODE_USE_ENV_PROXY=1`, because Node 24+'s `fetch` ignores the environment by default.
@@ -65,7 +65,8 @@ A carrier is a file location that holds proxy settings. The shared engine owns s
 | `npm` | `~/.npmrc` | `proxy`, `https-proxy`, `noproxy` | npm, yarn v1 |
 | `pnpm` | `~/.config/pnpm/config.yaml` | `httpProxy`, `httpsProxy`, `noProxy` | pnpm |
 | `ssh` | `github.com` block in `~/.ssh/config` | `ProxyCommand` | GitHub SSH |
-| `docker` | `/etc/docker/daemon.json` | read-only display | docker daemon |
+| `docker` | `proxies.default` in `~/.docker/config.json` | `httpProxy`, `httpsProxy` | new containers and builds (`docker run/build`, `docker compose`) |
+| `docker-daemon` | `/etc/docker/daemon.json` | read-only display | the daemon's `pull`/`push` |
 
 **Precedence**: interactive shells follow the `shell` carrier; every other process spawned by niri follows the `niri` carrier. Both therefore write explicit `unset` / `null` when turned off, instead of relying on a missing key.
 
@@ -172,7 +173,7 @@ The difference between `off` and `restore` is deliberate: `off` renders "no prox
 
 ## TUI
 
-`proxysw tui [on|off|toggle]` opens an fzf picker over the carriers that are managed and not removed by `exclude`, showing each one's switch state: Tab multi-selects, Ctrl-A selects all, Enter applies and Esc cancels, with `toggle` as the default action. docker and excluded carriers appear only in the header, never as selectable rows.
+`proxysw tui [on|off|toggle]` opens an fzf picker over the carriers that are managed and not removed by `exclude`, showing each one's switch state: Tab multi-selects, Ctrl-A selects all, Enter applies and Esc cancels, with `toggle` as the default action. The read-only `docker-daemon` and excluded carriers appear only in the header, never as selectable rows.
 
 - **Optional dependency**: `fzf` is the only external program, and only `tui` needs it; the core commands still run on the Python standard library. When fzf is missing the command exits with a usage error (2); `PROXYSW_FZF` points at a specific binary.
 - **The `--json` exception**: `--json` is for non-interactive commands. `tui` rejects `--json`, `--dry-run`, `--force`, `--verbose`, `--check`, `--short`, `--require-up` and `--shell`; it accepts one optional action and `--proxy`.
@@ -189,6 +190,7 @@ The config file lives at `$XDG_CONFIG_HOME/proxy-switcher/config.toml` (usually 
 ```toml
 endpoint = "http://127.0.0.1:7890"
 no_proxy = "localhost,127.0.0.1,::1"
+# container_endpoint = "http://172.17.0.1:7890"
 exclude = ["ssh"]
 ```
 
@@ -196,6 +198,7 @@ exclude = ["ssh"]
 | --- | --- | --- |
 | `endpoint` | `http://127.0.0.1:7890` | Proxy endpoint; http URLs only |
 | `no_proxy` | `localhost,127.0.0.1,::1` | Domain and IP literals only; no CIDR semantics |
+| `container_endpoint` | empty (derived from the bridge gateway) | The proxy as containers see it; set it for rootless or custom networks |
 | `exclude` | `[]` | Carrier names that are never touched |
 
 State and snapshots live in `$XDG_STATE_HOME/proxy-switcher/manifest.json`.
@@ -211,6 +214,8 @@ fish is not a managed carrier (see [ADR 0006](docs/adr/0006-fish-is-not-a-manage
 **npm / pnpm**: each writes three keys to its own file. npm keeps mode 0600 and replaces existing keys instead of appending duplicates; pnpm is edited line by line so comments and indentation survive.
 
 **ssh**: rewrites only the `ProxyCommand` inside the `github.com` block, writing `none` on `off`; every other Host block stays byte-identical. With the proxy off, GitHub SSH connects directly — if direct access is blocked, `git push` fails, and `status` says so.
+
+**docker**: rewrites only `httpProxy` and `httpsProxy` under `proxies.default` in `~/.docker/config.json`. `noProxy`, per-daemon entries and `auths` are never touched, and the file is never deleted. Inside a container `127.0.0.1` is the container itself, so a loopback `endpoint` is rewritten to the docker bridge gateway (`container_endpoint` overrides the guess); when docker is not running the carrier is skipped with a warning. Conflict detection fingerprints just those two keys, so `docker login` or a token refresh rewriting the file is not a conflict. `docker pull` goes through the daemon and is out of scope.
 
 ## Exit codes
 
@@ -240,7 +245,8 @@ bats --filter 'restore' tests/
 ## Known limitations
 
 - Linux + niri only; other desktops are untested.
-- docker is read-only: editing `daemon.json` needs root and a daemon restart, which stops running containers.
+- `docker` only affects containers and builds created after the switch: running containers keep their old environment, and compose services that set `HTTP_PROXY` explicitly read `.env`, not this file. `docker pull`/`push` go through the daemon, which still needs root and a restart.
+- `docker`'s `noProxy` is not managed: container-side exemptions (service names, internal APIs) belong to the project.
 - systemd `--user` services are not managed: `set-environment` cannot reach processes niri already spawned.
 - Running processes are never updated; only newly spawned ones see the change.
 - Apps launched from the DMS launcher inherit DMS's startup environment and may need a DMS restart.

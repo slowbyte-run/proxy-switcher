@@ -31,7 +31,7 @@ assert_all_carrier_files_match() {
   done
 }
 
-@test "on without a carrier name switches all five managed carriers in order" {
+@test "on without a carrier name switches all six managed carriers in order" {
   write_all_carriers_off
 
   run_proxysw on
@@ -40,7 +40,7 @@ assert_all_carrier_files_match() {
   local expected actual
   expected="$(managed_carriers)"
   actual="$(printf '%s\n' "$output" \
-    | grep -E '^(niri|shell|npm|pnpm|ssh): ' \
+    | grep -E '^(niri|shell|npm|pnpm|ssh|docker): ' \
     | sed 's/:.*//')"
   [ "$actual" = "$expected" ]
 
@@ -51,7 +51,7 @@ assert_all_carrier_files_match() {
   done
 }
 
-@test "on -> off -> restore returns all five files to their initial bytes" {
+@test "on -> off -> restore returns all six files to their initial bytes" {
   write_all_carriers_on
   write_proxy_config <<'TOML'
 endpoint = "http://127.0.0.1:7895"
@@ -358,7 +358,7 @@ TOML
 
   [ "$status" -eq 1 ]
   [[ "$output" == *"pnpm"* ]]
-  [[ "$output" == *"proxysw: partial completion: changed niri, shell, npm, ssh; not changed pnpm"* ]]
+  [[ "$output" == *"proxysw: partial completion: changed niri, shell, npm, ssh, docker; not changed pnpm"* ]]
 
   run_proxysw status
   [ "$status" -eq 0 ]
@@ -470,7 +470,7 @@ TOML
 }
 
 @test "toggle usage errors exit with code 2" {
-  run_proxysw toggle docker
+  run_proxysw toggle docker-daemon
   [ "$status" -eq 2 ]
   [[ "$output" == *"read-only"* ]]
 
@@ -552,7 +552,7 @@ TOML
   printf '%s\n' "$output" | jq -e . >/dev/null
   [ "$(printf '%s\n' "$output" | jq -r .dry_run)" = "true" ]
   [ "$(printf '%s\n' "$output" | jq -r .action)" = "on" ]
-  [ "$(printf '%s\n' "$output" | jq -r '.carriers | length')" -eq 5 ]
+  [ "$(printf '%s\n' "$output" | jq -r '.carriers | length')" -eq 6 ]
   for carrier in $(managed_carriers); do
     [ "$(printf '%s\n' "$output" | jq -r --arg name "$carrier" \
       '.carriers[] | select(.name == $name) | .changed')" = "true" ]
@@ -642,7 +642,7 @@ TOML
       '.carriers[] | select(.name == $name) | .written')" = "true" ]
   done
   # The files really changed, not just the document.
-  [ "$(printf '%s\n' "$output" | jq -r '[.carriers[] | select(.state == "on")] | length')" -eq 5 ]
+  [ "$(printf '%s\n' "$output" | jq -r '[.carriers[] | select(.state == "on")] | length')" -eq 6 ]
 }
 
 @test "--dry-run --json reports written false because nothing was applied" {

@@ -83,6 +83,9 @@ class Settings:
     endpoint: str
     no_proxy: str
     exclude: tuple[str, ...] = ()
+    # What the docker carrier writes: the host as seen from inside a container.
+    # Empty means "derive it (bridge gateway) or reuse the endpoint".
+    container_endpoint: str = ""
 
 
 @dataclass
@@ -120,19 +123,29 @@ def load_settings() -> Settings:
 
     endpoint = data.get("endpoint", DEFAULT_ENDPOINT)
     no_proxy = data.get("no_proxy", DEFAULT_NO_PROXY)
+    container_endpoint = data.get("container_endpoint", "")
 
-    if not isinstance(endpoint, str):
-        raise ConfigError(f"endpoint in {path} must be a string")
-    parsed = urlsplit(endpoint)
-    if parsed.scheme != "http" or not parsed.netloc:
-        raise ConfigError(
-            f"endpoint in {path} must be an http URL such as {DEFAULT_ENDPOINT}"
-        )
+    endpoint = _http_url(path, "endpoint", endpoint, DEFAULT_ENDPOINT)
     if not isinstance(no_proxy, str):
         raise ConfigError(f"no_proxy in {path} must be a string")
+    if not isinstance(container_endpoint, str):
+        raise ConfigError(f"container_endpoint in {path} must be a string")
+    if container_endpoint:
+        container_endpoint = _http_url(
+            path, "container_endpoint", container_endpoint, DEFAULT_ENDPOINT
+        )
 
     excluded = _exclude_list(path, data.get("exclude", []))
-    return Settings(endpoint, no_proxy, excluded)
+    return Settings(endpoint, no_proxy, excluded, container_endpoint)
+
+
+def _http_url(path: str, key: str, value, example: str) -> str:
+    if not isinstance(value, str):
+        raise ConfigError(f"{key} in {path} must be a string")
+    parsed = urlsplit(value)
+    if parsed.scheme != "http" or not parsed.netloc:
+        raise ConfigError(f"{key} in {path} must be an http URL such as {example}")
+    return value
 
 
 def carrier_view(
